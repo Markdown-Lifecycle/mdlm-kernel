@@ -135,7 +135,8 @@ test("staged packages publish partial graphs, elaborate one group additively and
   const pkg = {...loaded.package, actions: {...loaded.package.actions, [elaborate.id]: elaborate}, kernelCapabilities: {...loaded.package.kernelCapabilities, "staged-requirements@1": {type: "RQS", action: elaborate.id}}};
   const root = {...datum("REQ", 1), payload: {kind: "stakeholder"}};
   const draft = await context([], [root, datum("RQS", 1)]);
-  draft.pkg = loaded.package;
+  const {"staged-requirements@1": _staged, ...unstaged} = loaded.package.kernelCapabilities;
+  draft.pkg = {...loaded.package, kernelCapabilities: unstaged};
   await expect(finalizeDirectDomain(draft)).rejects.toThrow("trace-stakeholder-uncovered");
   const initial = await finalizeDirectDomain({...draft, pkg});
   const set = initial.outputs.find(d => d.type === "RQS")!;
