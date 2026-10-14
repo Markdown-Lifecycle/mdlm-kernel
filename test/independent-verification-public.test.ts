@@ -307,6 +307,10 @@ test("independent verification reports complete requirements, failures, stale ev
     corrected.links.push({type:"verification",target:activity});await fs.writeFile(correctionFile,JSON.stringify(correction));
     productId=cli(["proposal","submit",correctionFile]).revisions.find((id:string)=>id.startsWith("IMP-"));commit(repository);
     expect(datum(productId).links).toContainEqual({type:"verification",target:activity});
+    // A selection-only draft keeps the same context, so it starts from the current selection and drops the correction's context link.
+    const selectionFile=path.join(root,"selection-draft.json");
+    cli(["proposal","draft","update-verification-selection",productId,"--operation","selection","--output",selectionFile]);
+    expect(JSON.parse(await fs.readFile(selectionFile,"utf8")).candidates[0].links).toEqual([{type:"implements",target:set},{type:"verification",target:activity}]);
     // The regression ends at the published correction; executing and accepting it adds a container run and no draft coverage.
     // Keep the formal product and its oracle intact. A new provisional product tests implementation substitution and mismatch.
     const criterionContext=cli(["verification","context",expId]);

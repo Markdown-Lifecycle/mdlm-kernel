@@ -132,7 +132,8 @@ export function directExpectations(current: State) {
  * the author owns that relation and its target is still current. Verification activities also retain exact interface
  * revisions required by their carried targets. Not carried: relations any package action fixes for
  * the type (context such as corrects or responds-to, supplied fresh from this action's inputs), relations the kernel
- * generates for requirement tracing, and product verification selections, which need a fresh author choice.
+ * generates for requirement tracing, and product verification selections, which need a fresh author choice unless
+ * the action keeps the predecessor's exact context, as a selection-only revision does.
  */
 function carryPredecessors(current: State, candidates: DirectCandidate[]) {
   const kernelRelations = new Set([
@@ -150,7 +151,8 @@ function carryPredecessors(current: State, candidates: DirectCandidate[]) {
     const payload = structuredClone(prior.payload);
     for (const field of resolved.type.kernelManagedPayloadPaths) delete payload[field];
     const contextRelations = new Set(Object.values(current.pkg.actions).flatMap(action => Object.keys(action.links?.[candidate.type] ?? {})));
-    const authoredLinks = prior.links.filter(link => !contextRelations.has(link.type) && !kernelRelations.has(link.type));
+    const sameContext = candidate.links.every(link => prior.links.some(carried => carried.type === link.type && carried.target === link.target));
+    const authoredLinks = prior.links.filter(link => !contextRelations.has(link.type) && (!kernelRelations.has(link.type) || (sameContext && link.type === "verification")));
     const carriedLinks = authoredLinks.filter(link => latest(link.target));
     const requiredInterfaces = new Set(candidate.type === independentBinding(current.pkg)?.type
       ? [...candidate.links, ...carriedLinks].filter(link => link.type === "verifies").flatMap(link =>
