@@ -84,6 +84,7 @@ export interface KernelCapabilityBinding {
   context_link?: string;
   input_link?: string;
   subject_selector?: string;
+  action?: string;
 }
 
 export interface ProcessPackage {
@@ -209,7 +210,7 @@ function validateKernelCapabilityBindings(
 ): ProcessDiagnostic[] {
   return Object.entries(kernelCapabilities).flatMap(([reference, binding]) => {
     const path = `manifest.kernel_capabilities.${reference}.type`;
-    if (reference !== exactBaselineCapability.reference && reference !== "direct-observation@1" && reference !== "direct-observation@2" && reference !== "docker-verification@1" && reference !== "requirement-trace@1" && reference !== "requirement-trace@2" && reference !== "requirement-trace@3" && reference !== "requirement-trace@4" && reference !== "independent-verification@1" && reference !== "review-correction@1" && reference !== "verification-applicability@1") {
+    if (reference !== exactBaselineCapability.reference && reference !== "direct-observation@1" && reference !== "direct-observation@2" && reference !== "docker-verification@1" && reference !== "requirement-trace@1" && reference !== "requirement-trace@2" && reference !== "requirement-trace@3" && reference !== "requirement-trace@4" && reference !== "independent-verification@1" && reference !== "review-correction@1" && reference !== "verification-applicability@1" && reference !== "staged-requirements@1") {
       return [{
         code: "unknown-kernel-capability",
         path,
@@ -250,6 +251,13 @@ function validateKernelCapabilities(
     if (reference === "review-correction@1") {
       const trace = processPackage.kernelCapabilities["requirement-trace@4"];
       if (!trace || binding.type !== trace.type || binding.review_type !== trace.review_type) diagnostics.push({code: "incompatible-kernel-capability", path: bindingPath, message: "Review correction must bind the requirement-trace@4 set and review types"});
+      continue;
+    }
+    if (reference === "staged-requirements@1") {
+      const trace = processPackage.kernelCapabilities["requirement-trace@4"];
+      const action = binding.action ? processPackage.actions[binding.action] : undefined;
+      if (!trace || binding.type !== trace.type || !resolved.type.kernelManagedPayloadPaths.includes("trace_complete")) diagnostics.push({code: "incompatible-kernel-capability", path: bindingPath, message: "Staged requirements require the requirement-trace@4 set type with managed trace_complete"});
+      if (!action || action.capability !== "requirements" || action.authority || !Object.keys(action.revises ?? {}).includes(binding.type)) diagnostics.push({code: "incompatible-kernel-capability", path: bindingPath, message: "Staged requirements must name an unauthorized requirements action that revises the set"});
       continue;
     }
     if (reference === "verification-applicability@1") {
