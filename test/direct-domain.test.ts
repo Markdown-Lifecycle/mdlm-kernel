@@ -156,6 +156,15 @@ test("staged packages publish partial graphs, elaborate one group additively and
   const second = {...datum("REQ", 3), payload: {kind: "software"}};
   await expect(finalizeDirectDomain({...ctx, outputs: [child, second, group, {...datum("DCP", 2), links: [{type: "parent", target: child.revision_id}, {type: "child", target: second.revision_id}]}, successor]})).rejects.toThrow("staged-elaboration-group");
   await expect(finalizeDirectDomain({...ctx, outputs: [{...group, links: [group.links[0]!]}, successor]})).rejects.toThrow("staged-elaboration-group");
+  // A later group may reuse a passed requirement as a shared child without revising it.
+  const sibling = {...datum("REQ", 4), payload: {kind: "software"}};
+  const wide = await finalizeDirectDomain({...ctx, outputs: [child, sibling, {...group, links: [...group.links, {type: "child", target: sibling.revision_id}]}, successor]});
+  const wideSet = wide.outputs.find(d => d.type === "RQS")!;
+  const passWide = {...datum("REV", 2), payload: {outcome: "pass"}, links: [{type: "reviews", target: wideSet.revision_id}]};
+  const leaf = {...datum("REQ", 5), payload: {kind: "software"}};
+  const shared = {...datum("DCP", 2), links: [{type: "parent", target: child.revision_id}, {type: "child", target: leaf.revision_id}, {type: "child", target: sibling.revision_id}]};
+  const deeper = {...ctx, data: [...data, ...wide.outputs, passWide], subject: wideSet.revision_id, inputs: {subject: [wideSet.revision_id]}};
+  await expect(finalizeDirectDomain({...deeper, outputs: [leaf, shared, datum("RQS", 1, 3)]})).resolves.toBeDefined();
   const product = {...datum("IMP", 1), payload: {repository_path: ".", source_commit: "0".repeat(40)}, links: [{type: "implements", target: set.revision_id}]};
   expect((await deriveImplementationScopes(product, data, requirementTraceBinding(pkg)!)).diagnostics.map(d => d.code)).toContain("trace-stakeholder-uncovered");
 });

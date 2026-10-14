@@ -21,8 +21,9 @@ function stagedElaborationDiagnostics(data: DatumEnvelope[], trace: RequirementT
   const groups = graph.groups.filter(g => !before.groups.some(o => o.revision_id === g.revision_id));
   const group = groups[0];
   const parent = group?.links.find(l => l.type === "parent")?.target;
-  const children = group?.links.filter(l => l.type === "child").map(l => l.target).sort() ?? [];
-  if (groups.length !== 1 || !added.length || !before.requirements.some(r => r.revision_id === parent) || JSON.stringify(children) !== JSON.stringify(added.map(r => r.revision_id).sort())) return [{code: "staged-elaboration-group", message: "Elaboration adds exactly one decomposition group whose parent is an existing requirement and whose children are exactly the added requirements"}];
+  const children = group?.links.filter(l => l.type === "child").map(l => l.target) ?? [];
+  const existing = (id: string | undefined) => before.requirements.some(r => r.revision_id === id);
+  if (groups.length !== 1 || !added.length || !existing(parent) || added.some(r => !children.includes(r.revision_id)) || children.some(c => !existing(c) && !added.some(r => r.revision_id === c))) return [{code: "staged-elaboration-group", message: "Elaboration adds exactly one decomposition group under an existing requirement; it must contain every added requirement and may reuse existing requirements as shared children"}];
   if (added.some(r => r.payload.kind !== "software")) return [{code: "staged-elaboration-root", message: "Elaboration adds software requirements only; new stakeholder roots need stakeholder refinement"}];
   return [];
 }
