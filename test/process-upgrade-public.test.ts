@@ -80,6 +80,7 @@ test("compatible direct upgrades preserve accepted authority, expose required wo
     });
     await edit(original, "manifest.yaml", (m) => {
       delete m.kernel_capabilities["review-correction@1"];
+      delete m.kernel_capabilities["verification-applicability@1"];
       m.terminal = {
         when: 'exists("current-interfaces@1", {})',
         outcome: "profile-boundary-reached",
