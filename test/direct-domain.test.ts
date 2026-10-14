@@ -155,6 +155,7 @@ test("staged packages publish partial graphs, elaborate one group additively and
   await expect(finalizeDirectDomain({...ctx, outputs: [reworded, child, {...group, links: [{type: "parent", target: reworded.revision_id}, group.links[1]!]}, successor]})).rejects.toThrow("staged-elaboration-preserve");
   const second = {...datum("REQ", 3), payload: {kind: "software"}};
   await expect(finalizeDirectDomain({...ctx, outputs: [child, second, group, {...datum("DCP", 2), links: [{type: "parent", target: child.revision_id}, {type: "child", target: second.revision_id}]}, successor]})).rejects.toThrow("staged-elaboration-group");
+  await expect(finalizeDirectDomain({...ctx, outputs: [{...group, links: [group.links[0]!]}, successor]})).rejects.toThrow("staged-elaboration-group");
   const product = {...datum("IMP", 1), payload: {repository_path: ".", source_commit: "0".repeat(40)}, links: [{type: "implements", target: set.revision_id}]};
   expect((await deriveImplementationScopes(product, data, requirementTraceBinding(pkg)!)).diagnostics.map(d => d.code)).toContain("trace-stakeholder-uncovered");
 });

@@ -22,7 +22,7 @@ function stagedElaborationDiagnostics(data: DatumEnvelope[], trace: RequirementT
   const group = groups[0];
   const parent = group?.links.find(l => l.type === "parent")?.target;
   const children = group?.links.filter(l => l.type === "child").map(l => l.target).sort() ?? [];
-  if (groups.length !== 1 || !before.requirements.some(r => r.revision_id === parent) || JSON.stringify(children) !== JSON.stringify(added.map(r => r.revision_id).sort())) return [{code: "staged-elaboration-group", message: "Elaboration adds exactly one decomposition group whose parent is an existing requirement and whose children are exactly the added requirements"}];
+  if (groups.length !== 1 || !added.length || !before.requirements.some(r => r.revision_id === parent) || JSON.stringify(children) !== JSON.stringify(added.map(r => r.revision_id).sort())) return [{code: "staged-elaboration-group", message: "Elaboration adds exactly one decomposition group whose parent is an existing requirement and whose children are exactly the added requirements"}];
   if (added.some(r => r.payload.kind !== "software")) return [{code: "staged-elaboration-root", message: "Elaboration adds software requirements only; new stakeholder roots need stakeholder refinement"}];
   return [];
 }
