@@ -58,17 +58,22 @@ function authenticateObservation(datum: DatumEnvelope, verified: Awaited<ReturnT
   }
   if (r.caseResults!.some(c => c.evidence_refs.some(ref => !r.artifacts?.some(a => a.path === ref)))) throw new Error("Historical observation declared evidence is unavailable");
 }
-/** Explicit original selection, one predecessor, no receipt or execution mutation. Reused by publication and current review/acceptance. */
+/** Explicit original selection across a selection-only lineage, no receipt or execution mutation. Reused by publication and current review/acceptance. */
 export async function historicalApplicability(state: State, product: DatumEnvelope, activity: string, originalId: string) {
   const cap = state.pkg.kernelCapabilities["verification-applicability@1"], independent = independentBinding(state.pkg);
   if (!cap || cap.type !== independent?.result_type || product.type !== independent.implementation_type) throw new Error("Selected package does not support historical verification applicability for implementations");
   const original = exact(state, originalId);
   if (original.type !== cap.type || original.payload.historical_observation !== undefined) throw new Error("Historical applicability requires an original execution RES; reuse chains are unsupported");
   const priorId = links(original, "executes")[0] ?? "", prior = exact(state, priorId);
-  if (prior.id !== product.id || prior.revision !== product.revision - 1 || prior.type !== product.type) throw new Error("Historical applicability requires the immediate predecessor implementation in the same lineage");
+  if (prior.id !== product.id || prior.revision >= product.revision || prior.type !== product.type) throw new Error("Historical applicability requires an earlier implementation revision in the same lineage");
   const payload = (d: DatumEnvelope) => {const {source_changes, ...rest} = d.payload; return rest;};
   const semanticLinks = (d: DatumEnvelope) => d.links.filter(l => !["verification", "corrects"].includes(l.type)).map(l => `${l.type}\0${l.target}`).sort();
-  if (!isDeepStrictEqual(payload(prior), payload(product)) || !isDeepStrictEqual(semanticLinks(prior), semanticLinks(product)) || prior.body !== product.body) throw new Error("Historical applicability requires unchanged product source, inventory, attribution, scope, requirements and command");
+  // Every revision after the original's product is selection-only, so no source revert qualifies.
+  const lineage = state.data.filter(d => d.id === product.id && d.revision > prior.revision && d.revision < product.revision);
+  if (lineage.length !== product.revision - prior.revision - 1) throw new Error("Historical applicability requires every intermediate implementation revision");
+  for (const later of [...lineage, product]) if (later.type !== prior.type || !isDeepStrictEqual(payload(prior), payload(later)) || !isDeepStrictEqual(semanticLinks(prior), semanticLinks(later)) || prior.body !== later.body) throw new Error("Historical applicability requires unchanged product source, inventory, attribution, scope, requirements and command");
+  // A later recorded result for this activity in the lineage owns currency unless it applies this same original.
+  if (lineage.some(d => currentVerificationResults(state, d.revision_id, activity).some(r => (r.payload.historical_observation as HistoricalObservation | undefined)?.original_result !== originalId))) throw new Error("Historical original result is superseded by a later result in the lineage");
   if (!isDeepStrictEqual(links(original, "evaluates"), [activity]) || !isDeepStrictEqual(links(original, "verifies"), links(product, "implements"))) throw new Error("Historical result must bind the exact unchanged activity and requirements");
   const tx = await resultPublication(state, original);
   if (tx.evidence?.historicalResult !== undefined || tx.evidence?.receipt !== original.payload.receipt || !Object.values(tx.inputs).flat().includes(priorId) && tx.subject !== priorId) throw new Error("Historical original publication does not authenticate its execution claim");
