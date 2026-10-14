@@ -135,7 +135,7 @@ export function directExpectations(current: State) {
  * generates for requirement tracing, and product verification selections, which need a fresh author choice unless
  * the action keeps the predecessor's exact context, as a selection-only revision does.
  */
-function carryPredecessors(current: State, candidates: DirectCandidate[]) {
+function carryPredecessors(current: State, candidates: DirectCandidate[], action: DirectContext["action"]) {
   const kernelRelations = new Set([
     ...(requirementTraceBinding(current.pkg) ? ["contains", "decomposition", "retires", "changes-under", "baseline"] : []),
     ...(independentBinding(current.pkg) ? ["verification"] : []),
@@ -152,7 +152,8 @@ function carryPredecessors(current: State, candidates: DirectCandidate[]) {
     for (const field of resolved.type.kernelManagedPayloadPaths) delete payload[field];
     const contextRelations = new Set(Object.values(current.pkg.actions).flatMap(action => Object.keys(action.links?.[candidate.type] ?? {})));
     const sameContext = candidate.links.every(link => prior.links.some(carried => carried.type === link.type && carried.target === link.target));
-    const authoredLinks = prior.links.filter(link => !contextRelations.has(link.type) && (!kernelRelations.has(link.type) || (sameContext && link.type === "verification")));
+    const selection = (link: {type: string}) => sameContext && link.type === "verification" && kernelRelations.has(link.type) && !(link.type in (action.links?.[candidate.type] ?? {}));
+    const authoredLinks = prior.links.filter(link => selection(link) || (!contextRelations.has(link.type) && !kernelRelations.has(link.type)));
     const carriedLinks = authoredLinks.filter(link => latest(link.target));
     const requiredInterfaces = new Set(candidate.type === independentBinding(current.pkg)?.type
       ? [...candidate.links, ...carriedLinks].filter(link => link.type === "verifies").flatMap(link =>
@@ -166,8 +167,8 @@ function carryPredecessors(current: State, candidates: DirectCandidate[]) {
 export async function draftDirectProposal(root: string, action: string, subject: string | undefined, operation: string, activity?: string): Promise<DirectProposal> {
   const current = await directState(root);
   const selected = await guidance(current, action, subject);
-  carryPredecessors(current, selected.candidates);
   const context = directContext(current, action, subject), binding = independentBinding(current.pkg);
+  carryPredecessors(current, selected.candidates, context.action);
   if (activity === undefined && context.action.capability === "independent-result" && binding) {
     const activities = selectedActivities(current, executionSubject(context));
     if (activities.length === 1) activity = activities[0]!.revision_id;

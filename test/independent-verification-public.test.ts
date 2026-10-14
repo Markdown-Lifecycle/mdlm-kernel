@@ -330,7 +330,11 @@ test("independent verification reports complete requirements, failures, stale ev
     await revisePlan("incomplete-plan",incompleteCommit);await selectPlan("select-incomplete");
     expect(cli(["verification","status",trialId]).requirements[0].overall).toBe("stale");
     await runTrial("trial-incomplete",trialId);const incomplete=cli(["verification","status",trialId]);expect(incomplete.requirements[0].overall).toBe("error");expect(incomplete.requirements[0].activities[0].cases.some((c:any)=>c.outcome==="not-run")).toBe(true);
-    await fs.writeFile(path.join(verifier,"verify.py"),script);await revisePlan("repaired-plan",commit(verifier));await selectPlan("select-repaired");await runTrial("trial-repaired",trialId);expect(cli(["verification","status",trialId]).requirements[0].overall).toBe("observed-pass");
+    await fs.writeFile(path.join(verifier,"verify.py"),script);await revisePlan("repaired-plan",commit(verifier));await selectPlan("select-repaired");
+    const trialSelectionFile=path.join(root,"trial-selection-draft.json");
+    cli(["proposal","draft","update-criterion-verification-selection",trialId,"--operation","trial-selection","--output",trialSelectionFile]);
+    expect(JSON.parse(await fs.readFile(trialSelectionFile,"utf8")).candidates[0].links).toEqual([{type:"explores",target:expId},{type:"verification",target:provisionalActivity}]);
+    await runTrial("trial-repaired",trialId);expect(cli(["verification","status",trialId]).requirements[0].overall).toBe("observed-pass");
     const og=guidance("observe-prototype",trialId),oc=og.candidates[0];oc.payload={...oc.payload,title:"Working count",assessment:"Public checks passed",observation_origin:"scripted",interaction_observation:"Both CLI invocations matched",limitations:"Small bounded fixture",recommendation:"nominate",next_action:"Ask stakeholder for next comparison"};const observation=(await submit(og,"observe-trial",[oc])).revisions[0];
     const fg=guidance("record-feedback",observation),fc=fg.candidates[0];fc.payload={...fc.payload,title:"Compare changed implementation",action:"revise-prototype",feedback:"Try the next implementation and retain the same contract",source:"Fixture stakeholder"};const feedback=(await submit(fg,"feedback",[fc],{authority:["stakeholder"]})).revisions[0];
     await fs.writeFile(path.join(product,"app.py"),"import sys\nprint(len(sys.argv))\n");const wrong=commit(product);
