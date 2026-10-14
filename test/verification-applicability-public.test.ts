@@ -129,6 +129,8 @@ test("explicit historical RES applicability preserves execution and requires cur
     await expect(historicalApplicability({...state, data: [...state.data, recorded, later]}, later, xId, x.result)).rejects.toThrow("later result");
     const reverted = revise(changed, current.revision + 1), restored = revise(current, current.revision + 2);
     await expect(historicalApplicability({...state, data: [...state.data, reverted, restored]}, restored, xId, x.result)).rejects.toThrow("unchanged product");
+    // A duplicate cannot stand in for a missing revision.
+    await expect(historicalApplicability({...state, data: [...state.data, later, later]}, revise(current, current.revision + 3), xId, x.result)).rejects.toThrow("every intermediate");
     const strict = {...state, pkg: {...state.pkg, kernelCapabilities: {...state.pkg.kernelCapabilities}}}; delete strict.pkg.kernelCapabilities["verification-applicability@1"];
     await expect(historicalApplicability(strict, current, xId, x.result)).rejects.toThrow("does not support");
     const saved = await readVerificationReceiptBlob(repository, x.execution.value.oid);

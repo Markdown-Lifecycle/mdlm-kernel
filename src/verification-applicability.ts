@@ -70,7 +70,7 @@ export async function historicalApplicability(state: State, product: DatumEnvelo
   const semanticLinks = (d: DatumEnvelope) => d.links.filter(l => !["verification", "corrects"].includes(l.type)).map(l => `${l.type}\0${l.target}`).sort();
   // Every revision after the original's product is selection-only, so no source revert qualifies.
   const lineage = state.data.filter(d => d.id === product.id && d.revision > prior.revision && d.revision < product.revision);
-  if (lineage.length !== product.revision - prior.revision - 1) throw new Error("Historical applicability requires every intermediate implementation revision");
+  if (Array.from({length: product.revision - prior.revision - 1}, (_, i) => prior.revision + 1 + i).some(n => lineage.filter(d => d.revision === n).length !== 1)) throw new Error("Historical applicability requires every intermediate implementation revision");
   for (const later of [...lineage, product]) if (later.type !== prior.type || !isDeepStrictEqual(payload(prior), payload(later)) || !isDeepStrictEqual(semanticLinks(prior), semanticLinks(later)) || prior.body !== later.body) throw new Error("Historical applicability requires unchanged product source, inventory, attribution, scope, requirements and command");
   // A later recorded result for this activity in the lineage owns currency unless it applies this same original.
   if (lineage.some(d => currentVerificationResults(state, d.revision_id, activity).some(r => (r.payload.historical_observation as HistoricalObservation | undefined)?.original_result !== originalId))) throw new Error("Historical original result is superseded by a later result in the lineage");
