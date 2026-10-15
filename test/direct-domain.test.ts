@@ -3,8 +3,8 @@ import path from "node:path";
 import { expect, test } from "vitest";
 import { loadProcessPackage, type DatumEnvelope } from "../src/index.js";
 import { requirementAuthoringTargets } from "../src/direct-guidance.js";
-import { validateChangeDatum } from "../src/change-assessment.js";
-import { requirementTraceBinding } from "../src/requirement-trace.js";
+import { assessRequirements, validateChangeDatum } from "../src/change-assessment.js";
+import { deriveImplementationScopes, requirementTraceBinding } from "../src/requirement-trace.js";
 import { finalizeDirectDomain } from "../src/direct-domain.js";
 import type { DirectFinalizationContext } from "../src/direct-contract.js";
 
@@ -125,4 +125,46 @@ test('review recovery rejects foreign targets, ordinary authors, accepted and st
   const stale = {...set, revision: 2, revision_id: `${set.id}-r00002`};
   await expect(finalizeDirectDomain({...ctx, data: [...ctx.data, stale]})).rejects.toThrow('review-correction-stale');
   await expect(finalizeDirectDomain({...ctx, outputs: [{...replacement, payload: {...replacement.payload, correction_reason: ' '}}]})).rejects.toThrow('review-correction-reason');
+});
+
+test("staged packages publish partial graphs, elaborate one group additively and implement only complete graphs", async () => {
+  const loaded = await loadProcessPackage(installedProcessPackageRoot("iterative"));
+  if (!loaded.ok) throw new Error(JSON.stringify(loaded.diagnostics));
+  const {authority: _, ...refine} = loaded.package.actions["refine-requirements"]!;
+  const elaborate = {...refine, id: "elaborate-requirements"};
+  const pkg = {...loaded.package, actions: {...loaded.package.actions, [elaborate.id]: elaborate}, kernelCapabilities: {...loaded.package.kernelCapabilities, "staged-requirements@1": {type: "RQS", action: elaborate.id}}};
+  const root = {...datum("REQ", 1), payload: {kind: "stakeholder"}};
+  const draft = await context([], [root, datum("RQS", 1)]);
+  draft.pkg = loaded.package;
+  await expect(finalizeDirectDomain(draft)).rejects.toThrow("trace-stakeholder-uncovered");
+  const initial = await finalizeDirectDomain({...draft, pkg});
+  const set = initial.outputs.find(d => d.type === "RQS")!;
+  expect(set.payload.trace_complete).toBe(false);
+  const pass = {...datum("REV", 1), payload: {outcome: "pass", requirement_assessments: [{requirement: root.revision_id, disposition: "valid"}], decomposition_assessments: []}, links: [{type: "reviews", target: set.revision_id}]};
+  const data = [...initial.outputs, pass];
+  const child = {...datum("REQ", 2), payload: {kind: "software"}};
+  const group = {...datum("DCP", 1), links: [{type: "parent", target: root.revision_id}, {type: "child", target: child.revision_id}]};
+  const successor = datum("RQS", 1, 2);
+  const ctx = {...await context(data, [child, group, successor]), pkg, action: elaborate, subject: set.revision_id, inputs: {subject: [set.revision_id]}};
+  const elaborated = await finalizeDirectDomain(ctx);
+  const next = elaborated.outputs.find(d => d.type === "RQS")!;
+  expect(next.payload.trace_complete).toBe(true);
+  // The next review assesses only the added rows; the passed root keeps its credit.
+  expect(assessRequirements([...data, ...elaborated.outputs], requirementTraceBinding(pkg)!, next)).toMatchObject({requirements: [child.revision_id], groups: [{revision: group.revision_id, parent: root.revision_id, children: [child.revision_id]}]});
+  const reworded = {...root, revision: 2, revision_id: `${root.id}-r00002`, body: "Reworded"};
+  await expect(finalizeDirectDomain({...ctx, outputs: [reworded, child, {...group, links: [{type: "parent", target: reworded.revision_id}, group.links[1]!]}, successor]})).rejects.toThrow("staged-elaboration-preserve");
+  const second = {...datum("REQ", 3), payload: {kind: "software"}};
+  await expect(finalizeDirectDomain({...ctx, outputs: [child, second, group, {...datum("DCP", 2), links: [{type: "parent", target: child.revision_id}, {type: "child", target: second.revision_id}]}, successor]})).rejects.toThrow("staged-elaboration-group");
+  await expect(finalizeDirectDomain({...ctx, outputs: [{...group, links: [group.links[0]!]}, successor]})).rejects.toThrow("staged-elaboration-group");
+  // A later group may reuse a passed requirement as a shared child without revising it.
+  const sibling = {...datum("REQ", 4), payload: {kind: "software"}};
+  const wide = await finalizeDirectDomain({...ctx, outputs: [child, sibling, {...group, links: [...group.links, {type: "child", target: sibling.revision_id}]}, successor]});
+  const wideSet = wide.outputs.find(d => d.type === "RQS")!;
+  const passWide = {...datum("REV", 2), payload: {outcome: "pass"}, links: [{type: "reviews", target: wideSet.revision_id}]};
+  const leaf = {...datum("REQ", 5), payload: {kind: "software"}};
+  const shared = {...datum("DCP", 2), links: [{type: "parent", target: child.revision_id}, {type: "child", target: leaf.revision_id}, {type: "child", target: sibling.revision_id}]};
+  const deeper = {...ctx, data: [...data, ...wide.outputs, passWide], subject: wideSet.revision_id, inputs: {subject: [wideSet.revision_id]}};
+  await expect(finalizeDirectDomain({...deeper, outputs: [leaf, shared, datum("RQS", 1, 3)]})).resolves.toBeDefined();
+  const product = {...datum("IMP", 1), payload: {repository_path: ".", source_commit: "0".repeat(40)}, links: [{type: "implements", target: set.revision_id}]};
+  expect((await deriveImplementationScopes(product, data, requirementTraceBinding(pkg)!)).diagnostics.map(d => d.code)).toContain("trace-stakeholder-uncovered");
 });

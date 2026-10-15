@@ -2,12 +2,30 @@ import { createHash } from "node:crypto";
 import type { DatumEnvelope, ProcessDiagnostic } from "./index.js";
 import type { DirectFinalizationContext, DirectFinalizationResult } from "./direct-contract.js";
 import { assessRequirements, approvedChanges, deriveSourceDispositionCandidates, reviewedRequirementSet, validateChangeDatum } from "./change-assessment.js";
-import { requirementTraceBinding, latestRequirements, selectedRequirementGraph, deriveImplementationScopes, implementationSourceChanges } from "./requirement-trace.js";
+import { requirementTraceBinding, latestRequirements, selectedRequirementGraph, deriveImplementationScopes, implementationSourceChanges, type RequirementTraceBinding, type SelectedRequirementGraph } from "./requirement-trace.js";
 
 import { independentBinding, validateVerificationActivity, selectedActivities, verificationStatus, currentVerificationResults, independentExecutionBinding } from "./independent-verification.js";
 
 function reject(diagnostics: ProcessDiagnostic[]): never {
   throw new Error(diagnostics.map(d => `${d.code}: ${d.message}`).join("; "));
+}
+
+/** Elaboration adds exactly one group of new software children under an existing requirement
+ * and keeps every previously selected requirement and group revision unchanged. */
+function stagedElaborationDiagnostics(data: DatumEnvelope[], trace: RequirementTraceBinding, previous: DatumEnvelope | undefined, graph: SelectedRequirementGraph): ProcessDiagnostic[] {
+  if (!previous) return [{code: "staged-elaboration-predecessor", message: "Elaboration revises an existing requirement set"}];
+  const before = selectedRequirementGraph(data, previous, trace);
+  const kept = (old: DatumEnvelope[], now: DatumEnvelope[]) => old.every(o => now.some(n => n.revision_id === o.revision_id));
+  if (!kept(before.requirements, graph.requirements) || !kept(before.groups, graph.groups)) return [{code: "staged-elaboration-preserve", message: "Elaboration may not revise or remove existing requirements or groups; use the correction or stakeholder refinement action"}];
+  const added = graph.requirements.filter(r => !before.requirements.some(o => o.revision_id === r.revision_id));
+  const groups = graph.groups.filter(g => !before.groups.some(o => o.revision_id === g.revision_id));
+  const group = groups[0];
+  const parent = group?.links.find(l => l.type === "parent")?.target;
+  const children = group?.links.filter(l => l.type === "child").map(l => l.target) ?? [];
+  const existing = (id: string | undefined) => before.requirements.some(r => r.revision_id === id);
+  if (groups.length !== 1 || !added.length || !existing(parent) || added.some(r => !children.includes(r.revision_id)) || children.some(c => !existing(c) && !added.some(r => r.revision_id === c))) return [{code: "staged-elaboration-group", message: "Elaboration adds exactly one decomposition group under an existing requirement; it must contain every added requirement and may reuse existing requirements as shared children"}];
+  if (added.some(r => r.payload.kind !== "software")) return [{code: "staged-elaboration-root", message: "Elaboration adds software requirements only; new stakeholder roots need stakeholder refinement"}];
+  return [];
 }
 
 /** Derive graph membership and committed source attribution within the caller's atomic batch. */
@@ -82,6 +100,11 @@ export async function finalizeDirectDomain(context: DirectFinalizationContext): 
       }
       const graph = selectedRequirementGraph(allData, output.datum, trace, true);
       if (graph.diagnostics.length) reject(graph.diagnostics);
+      if (trace.stagedAction) {
+        output.datum.payload.trace_complete = graph.complete;
+        const elaboration = context.action.id === trace.stagedAction ? stagedElaborationDiagnostics(context.data, trace, previousSet, graph) : [];
+        if (elaboration.length) reject(elaboration);
+      }
       managedOutputs.push(output.datum);
     }
     for (const output of [...outputData].filter((o) => o.datum.type === trace.implementation_type)) {

@@ -286,6 +286,12 @@ mdlm proposal settlement requirements-001 --json
 
 Packages declaring `review-correction@1` may offer independent same-subject recovery for a current unaccepted failed requirement-set review. Publish a new review identity, one exact `supersedes` link to the active failed judgment, and a nonblank `correction_reason`. The action requires independent review authority and fixes its supersession link from the exact failure input. Original review bytes and registration remain historical evidence. Current review selection omits superseded judgments; normal scoped requirement correction follows the corrected assessments. Recovery does not grant stakeholder scope or revise accepted subjects.
 
+### Staged requirement graphs
+
+The opt-in `staged-requirements@1` capability binds `type` to the requirement-trace@4 set type, which declares `trace_complete` as kernel-managed, and names one `action`: an unauthorized requirements action that revises the set. Publication and review then accept a graph whose stakeholder roots are not all decomposed yet, or that has no software leaf yet. The kernel records `trace_complete` on every published set. Implementation publication still requires a complete graph, so execution and acceptance, which bind an implementation, do too. Verification authoring may start on a partial graph.
+
+The named elaboration action may only add exactly one decomposition group. Its parent is a requirement selected by the predecessor set. Its children include every newly added software requirement, and may also reuse existing selected requirements as shared children. Every previously selected requirement and group revision stays unchanged. Rewording, removal, new stakeholder roots and membership changes use the correction or stakeholder refinement actions. Review credit is unchanged: after a passing review, the next review assesses only the added requirements and group. Older kernels reject the capability, and compatible upgrade does not add it.
+
 ### Historical verification applicability
 
 The opt-in `verification-applicability@1` capability binds `type` to the existing

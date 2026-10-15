@@ -16,10 +16,13 @@ export interface RequirementTraceBinding {
   result_type?: string;
   partialSource?: boolean;
   independentVerification?: boolean;
+  /** staged-requirements@1: the requirements action that may only add one group under passed records. */
+  stagedAction?: string;
 }
 export function requirementTraceBinding(pkg: ProcessPackage): RequirementTraceBinding | undefined {
   const binding = pkg.kernelCapabilities["requirement-trace@4"] ?? pkg.kernelCapabilities["requirement-trace@3"] ?? pkg.kernelCapabilities["requirement-trace@2"] ?? pkg.kernelCapabilities["requirement-trace@1"];
-  return binding ? {...binding, partialSource: !!(pkg.kernelCapabilities["requirement-trace@3"] || pkg.kernelCapabilities["requirement-trace@4"]), independentVerification: !!pkg.kernelCapabilities["requirement-trace@4"]} as RequirementTraceBinding : undefined;
+  const staged = pkg.kernelCapabilities["staged-requirements@1"];
+  return binding ? {...binding, partialSource: !!(pkg.kernelCapabilities["requirement-trace@3"] || pkg.kernelCapabilities["requirement-trace@4"]), independentVerification: !!pkg.kernelCapabilities["requirement-trace@4"], ...(staged?.action ? {stagedAction: staged.action} : {})} as RequirementTraceBinding : undefined;
 }
 export function latestRequirements(data: DatumEnvelope[], binding: RequirementTraceBinding): DatumEnvelope[] {
   const latest = new Map<string, DatumEnvelope>();
@@ -35,9 +38,12 @@ export interface SelectedRequirementGraph {
   groups: DatumEnvelope[];
   parents: Map<string, string[]>;
   diagnostics: ProcessDiagnostic[];
+  /** Every stakeholder root is decomposed and at least one software leaf exists. */
+  complete: boolean;
 }
 export function selectedRequirementGraph(
   data: DatumEnvelope[], set: DatumEnvelope, binding: RequirementTraceBinding, requireCurrent = false,
+  requireComplete = !binding.stagedAction,
 ): SelectedRequirementGraph {
   const diagnostics: ProcessDiagnostic[] = [];
   const fail = (code: string, message: string, path = set.revision_id) => diagnostics.push({ code, message, path });
@@ -106,11 +112,12 @@ export function selectedRequirementGraph(
     if (JSON.stringify([...targets].sort()) !== JSON.stringify(expected)) fail("trace-selection-stale", "The selected graph must include every current requirement revision; publish a reassessed requirement set before implementation");
   }
   const leaves = new Set(requirements.filter((d) => d.payload.kind === "software" && !children.has(d.revision_id)).map((d) => d.revision_id));
-  for (const root of requirements.filter((d) => d.payload.kind === "stakeholder")) {
-    if (!children.has(root.revision_id)) fail("trace-stakeholder-uncovered", "Every stakeholder root must be decomposed into software behavior", root.revision_id);
-  }
-  if (!leaves.size) fail("trace-software-leaf-missing", "The graph must have a software leaf eligible for implementation");
-  return { requirements, leaves, groups, parents, diagnostics };
+  // Staged packages publish and review partial graphs; implementation still requires completeness.
+  const incomplete: ProcessDiagnostic[] = requirements.filter((d) => d.payload.kind === "stakeholder" && !children.has(d.revision_id))
+    .map((root) => ({ code: "trace-stakeholder-uncovered", message: "Every stakeholder root must be decomposed into software behavior", path: root.revision_id }));
+  if (!leaves.size) incomplete.push({ code: "trace-software-leaf-missing", message: "The graph must have a software leaf eligible for implementation", path: set.revision_id });
+  if (requireComplete) diagnostics.push(...incomplete);
+  return { requirements, leaves, groups, parents, diagnostics, complete: !incomplete.length };
 }
 
 export function traceDatumDiagnostics(pkg: ProcessPackage, datum: DatumEnvelope, data: DatumEnvelope[]): ProcessDiagnostic[] {
@@ -160,7 +167,7 @@ export async function deriveImplementationScopes(
 ) {
   const selection = data.find((d) => d.revision_id === implementation.links.find((l) => l.type === "implements")?.target && d.type === binding.type);
   if (!selection) return { diagnostics: [{ code: "trace-selection-missing", message: "Implementation must bind one exact requirement graph" }], inventory: [], scopes: [] };
-  const graph = selectedRequirementGraph(data, selection, binding, true);
+  const graph = selectedRequirementGraph(data, selection, binding, true, true);
   if (graph.diagnostics.length) return { diagnostics: graph.diagnostics, inventory: [], scopes: [] };
   try {
     const {entries, diagnostics: sourceDiagnostics} = await readImplementationSource(implementation);
