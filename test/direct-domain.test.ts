@@ -1,5 +1,8 @@
 import { installedProcessPackageRoot } from "../src/installed-process-package.js";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { expect, test } from "vitest";
 import { loadProcessPackage, type DatumEnvelope } from "../src/index.js";
 import { requirementAuthoringTargets } from "../src/direct-guidance.js";
@@ -184,10 +187,15 @@ test("verification may keep an earlier authoring set while its targets and inter
   const g1 = group(1, child), g2 = group(2, child, later);
   const authored = set(1, g1, root, child), elaborated = set(2, g2, root, child, later);
   const data: DatumEnvelope[] = [api, root, child, later, g1, g2, authored, elaborated];
+  const verifier = await mkdtemp(path.join(tmpdir(), "mdlm-domain-verifier-"));
+  await writeFile(path.join(verifier, "verify.py"), "print('fixture')\n");
+  const git = (...args: string[]) => execFileSync("git", ["-C", verifier, ...args], {encoding: "utf8"}).trim();
+  git("init", "-q"); git("add", ".");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", "Verifier fixture");
   const activity = {...datum("VFY", 1), links: [{type: "verifies", target: child.revision_id}, {type: "uses-interface", target: api.revision_id}],
     payload: {title: "CLI check", method: "CLI test", objective: "Observe output", authoring_subject: authored.revision_id,
       authoring_context: verificationAuthoringContext({pkg, package: identity, data}, authored.revision_id).authoringContext,
-      repository_path: "/verifier", source_commit: "a".repeat(40), verification_image: "python@sha256:" + "b".repeat(64), verification_command: ["python3", "verify.py"], verification_script: "verify.py", results_path: "results.json",
+      repository_path: verifier, source_commit: git("rev-parse", "HEAD"), verification_image: "python@sha256:" + "b".repeat(64), verification_command: ["python3", "verify.py"], verification_script: "verify.py", results_path: "results.json",
       cases: [{id: "cli", targets: [child.revision_id], preconditions: ["Fresh process"], actions: ["Invoke"], expected_results: ["Output"], coverage_rationale: "Public output"}],
       coverage: [{target: child.revision_id, obligations: ["Output"], case_ids: ["cli"], rationale: "Public output"}]}};
   const publish = async (subject: DatumEnvelope, extra: DatumEnvelope[] = []) => finalizeDirectDomain({...await context([...data, ...extra], [activity]), pkg, action: pkg.actions["plan-verification"]!, package: identity, subject: subject.revision_id, inputs: {subject: [subject.revision_id]}});
@@ -203,6 +211,7 @@ test("verification may keep an earlier authoring set while its targets and inter
   const other = {...set(1, g2, root, child, later), id: "RQS-0000000002", revision_id: "RQS-0000000002-r00001"};
   await expect(publish(other, [other])).rejects.toThrow("Activity authoring subject differs from its exact action context");
   await expect(finalizeDirectDomain({...await context(data, [{...activity, payload: {...activity.payload, authoring_subject: elaborated.revision_id, authoring_context: verificationAuthoringContext({pkg, package: identity, data}, elaborated.revision_id).authoringContext}}]), pkg, action: pkg.actions["plan-verification"]!, package: identity, subject: authored.revision_id})).rejects.toThrow("Activity authoring subject differs from its exact action context");
+  await rm(verifier, {recursive: true, force: true});
 });
 
 test("a set retargets unchanged requirements to a newer interface revision without revising them or their activities", async () => {
