@@ -114,7 +114,7 @@ async function guidance(current: State,ref: string,subject?: string) {
   }
   const execution=(["verification-result","independent-result"].includes(context.action.capability) || (context.action.capability === "observation" && !independentBinding(context.pkg)));
   const implementation=execution?executionSubject(context):undefined;
-  return {ok:true,contract:"mdlm-direct-guidance@1",action:actionRef(context.action),...(subject?{subject}:{}),package:current.package,snapshot:current.snapshot,inputs:context.inputs,prompt:prompt.prompt,payloadSchemas:schemas,sourceAssessmentTargets:sourceAssessmentTargets(context),requirementAuthoringTargets:requirementAuthoringTargets(context),context:current.data.filter(d=>Object.values(context.inputs).flat().includes(d.revision_id)||d.revision_id===subject),candidates,effectiveAuthority:context.action.authority??{kind:"autonomous"},...(context.action.authority?{authority:context.action.authority}:{}),...(context.action.capability === "independent-result" && current.pkg.kernelCapabilities["verification-applicability@1"] ? {historicalEvidenceMode: {field: "evidence.historicalResult", instruction: "Explicit original passing RES on the immediate predecessor IMP; selection-only successor, unchanged source/attribution/requirements/exact method. Omit evidence.receipt. Kernel derives historical_observation; current independent review may require fresh execution."}} : {}),...(implementation?{executionSubject:implementation.revision_id,executionCommand:`mdlm execution run ${implementation.revision_id} <operation>${independentBinding(current.pkg)?" --activity <exact-VFY>":""} --json`,evidence:await availableReceipts(current,implementation),receiptDetails:await receiptDetails(current,implementation)}:{})};
+  return {ok:true,contract:"mdlm-direct-guidance@1",action:actionRef(context.action),...(subject?{subject}:{}),package:current.package,snapshot:current.snapshot,inputs:context.inputs,prompt:prompt.prompt,payloadSchemas:schemas,sourceAssessmentTargets:sourceAssessmentTargets(context),requirementAuthoringTargets:requirementAuthoringTargets(context),context:current.data.filter(d=>Object.values(context.inputs).flat().includes(d.revision_id)||d.revision_id===subject),candidates,effectiveAuthority:context.action.authority??{kind:"autonomous"},...(context.action.authority?{authority:context.action.authority}:{}),...(context.action.capability === "independent-result" && current.pkg.kernelCapabilities["verification-applicability@1"] ? {historicalEvidenceMode: {field: "evidence.historicalResult", instruction: "Explicit original execution RES on an earlier IMP of this lineage; every later revision selection-only, unchanged source/attribution/requirements/exact method. Omit evidence.receipt. Kernel derives historical_observation; current independent review may require fresh execution."}} : {}),...(implementation?{executionSubject:implementation.revision_id,executionCommand:`mdlm execution run ${implementation.revision_id} <operation>${independentBinding(current.pkg)?" --activity <exact-VFY>":""} --json`,evidence:await availableReceipts(current,implementation),receiptDetails:await receiptDetails(current,implementation)}:{})};
 }
 export async function inspectDirectExpectations(root:string,action?:string,subject?:string) {
   const current=await directState(root);
@@ -132,9 +132,10 @@ export function directExpectations(current: State) {
  * the author owns that relation and its target is still current. Verification activities also retain exact interface
  * revisions required by their carried targets. Not carried: relations any package action fixes for
  * the type (context such as corrects or responds-to, supplied fresh from this action's inputs), relations the kernel
- * generates for requirement tracing, and product verification selections, which need a fresh author choice.
+ * generates for requirement tracing, and product verification selections, which need a fresh author choice unless
+ * the action keeps the predecessor's exact context, as a selection-only revision does.
  */
-function carryPredecessors(current: State, candidates: DirectCandidate[]) {
+function carryPredecessors(current: State, candidates: DirectCandidate[], action: DirectContext["action"]) {
   const kernelRelations = new Set([
     ...(requirementTraceBinding(current.pkg) ? ["contains", "decomposition", "retires", "changes-under", "baseline"] : []),
     ...(independentBinding(current.pkg) ? ["verification"] : []),
@@ -150,7 +151,9 @@ function carryPredecessors(current: State, candidates: DirectCandidate[]) {
     const payload = structuredClone(prior.payload);
     for (const field of resolved.type.kernelManagedPayloadPaths) delete payload[field];
     const contextRelations = new Set(Object.values(current.pkg.actions).flatMap(action => Object.keys(action.links?.[candidate.type] ?? {})));
-    const authoredLinks = prior.links.filter(link => !contextRelations.has(link.type) && !kernelRelations.has(link.type));
+    const sameContext = candidate.links.every(link => prior.links.some(carried => carried.type === link.type && carried.target === link.target));
+    const selection = (link: {type: string}) => sameContext && link.type === "verification" && kernelRelations.has(link.type) && !(link.type in (action.links?.[candidate.type] ?? {}));
+    const authoredLinks = prior.links.filter(link => selection(link) || (!contextRelations.has(link.type) && !kernelRelations.has(link.type)));
     const carriedLinks = authoredLinks.filter(link => latest(link.target));
     const requiredInterfaces = new Set(candidate.type === independentBinding(current.pkg)?.type
       ? [...candidate.links, ...carriedLinks].filter(link => link.type === "verifies").flatMap(link =>
@@ -164,8 +167,8 @@ function carryPredecessors(current: State, candidates: DirectCandidate[]) {
 export async function draftDirectProposal(root: string, action: string, subject: string | undefined, operation: string, activity?: string): Promise<DirectProposal> {
   const current = await directState(root);
   const selected = await guidance(current, action, subject);
-  carryPredecessors(current, selected.candidates);
   const context = directContext(current, action, subject), binding = independentBinding(current.pkg);
+  carryPredecessors(current, selected.candidates, context.action);
   if (activity === undefined && context.action.capability === "independent-result" && binding) {
     const activities = selectedActivities(current, executionSubject(context));
     if (activities.length === 1) activity = activities[0]!.revision_id;
