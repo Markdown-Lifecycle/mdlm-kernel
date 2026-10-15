@@ -230,7 +230,8 @@ test("a set retargets unchanged requirements to a newer interface revision witho
 
   // One declared step: no requirement or group revision, and the next set keeps the retarget.
   const retarget = {...datum("RQS", 1, 2), links: [{type: "retargets-interface", target: icd[1]!.revision_id}]};
-  await expect(finalizeDirectDomain({...await context(data, [retarget]), pkg: loaded.package})).rejects.toThrow("interface-retarget-capability");
+  const {"interface-retarget@1": _, ...withoutRetarget} = loaded.package.kernelCapabilities;
+  await expect(finalizeDirectDomain({...await context(data, [retarget]), pkg: {...loaded.package, kernelCapabilities: withoutRetarget}})).rejects.toThrow("interface-retarget-capability");
   const retargeted = await publish(data, [retarget]);
   expect(retargeted.outputs.map(d => d.type)).toEqual(["RQS"]);
   const set2 = retargeted.outputs[0]!;
