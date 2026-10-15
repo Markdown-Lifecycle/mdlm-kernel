@@ -53,6 +53,8 @@ use `mdlm-review-export@1` and pin the actual saved bytes. Archives are transpor
 not native registration inputs; registration and publication continue to build
 and hash the complete expanded context. Existing packets keep their bindings.
 
+An activity's authoring subject is its action's exact subject or, for a requirement set, an earlier revision of that set whose verified target revisions and their interface revisions are still selected unchanged in the current set.
+
 When an activity's exact authoring subject is a requirement set, its review
 context includes that set's complete requirement graph. This contextual graph
 does not expand the activity's selected verification or assessment targets.

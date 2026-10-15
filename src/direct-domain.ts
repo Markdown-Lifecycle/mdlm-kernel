@@ -4,7 +4,7 @@ import type { DirectFinalizationContext, DirectFinalizationResult } from "./dire
 import { assessRequirements, approvedChanges, deriveSourceDispositionCandidates, reviewedRequirementSet, validateChangeDatum } from "./change-assessment.js";
 import { requirementTraceBinding, latestRequirements, selectedRequirementGraph, deriveImplementationScopes, implementationSourceChanges, type RequirementTraceBinding, type SelectedRequirementGraph } from "./requirement-trace.js";
 
-import { independentBinding, validateVerificationActivity, selectedActivities, verificationStatus, currentVerificationResults, independentExecutionBinding } from "./independent-verification.js";
+import { independentBinding, authoringSubjectDiagnostic, validateVerificationActivity, selectedActivities, verificationStatus, currentVerificationResults, independentExecutionBinding } from "./independent-verification.js";
 
 function reject(diagnostics: ProcessDiagnostic[]): never {
   throw new Error(diagnostics.map(d => `${d.code}: ${d.message}`).join("; "));
@@ -159,7 +159,8 @@ export async function finalizeDirectDomain(context: DirectFinalizationContext): 
       if (datum.type === independent.type) {
         validateVerificationActivity(state, datum);
         const subject = state.data.find(d=>d.revision_id===context.subject);
-        if (subject && subject.type !== independent.type && datum.payload.authoring_subject !== subject.revision_id) throw new Error("Activity authoring subject differs from its exact action context");
+        const stale = subject && subject.type !== independent.type ? authoringSubjectDiagnostic(state, datum, subject) : undefined;
+        if (stale) throw new Error(stale);
       }
       if (datum.type === independent.review_type) {
         const activity = state.data.find(d=>d.type===independent.type && datum.links.some(l=>l.type==="reviews" && l.target===d.revision_id));

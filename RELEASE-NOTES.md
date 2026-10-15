@@ -2,6 +2,8 @@
 
 Process Packages declaring `staged-requirements@1` can draft stakeholder requirements first, then add one decomposition group per transaction. Requirement sets may be published and reviewed before every stakeholder root is decomposed, and each set records the kernel-managed `trace_complete`. The named elaboration action may only add one group under an existing requirement, containing every added software requirement and optionally existing shared children, with every earlier requirement and group revision unchanged, so the next review assesses only that group. Implementation publication still requires a complete graph. Packages without the capability keep the existing completeness checks at set publication. Compatible upgrade does not add this capability.
 
+A verification activity may now be published with an `authoring_subject` that is an earlier revision of its action's requirement set, so verification for a passed group can proceed while later groups are elaborated. Every `verifies` target revision and every interface revision those targets use must still be selected unchanged in the current set; otherwise publication names the changed target or interface. `authoring_context` still binds the exact export the verifier used.
+
 The default dependency is now Process Package distribution 2.5.41, whose iterative package uses staged requirements and requires this kernel. Fresh `mdlm init --process iterative` products start with stakeholder requirements, then add one reviewed decomposition group at a time. Existing products keep their selected package.
 
 Compatible direct upgrades can opt into `verification-applicability@1` while

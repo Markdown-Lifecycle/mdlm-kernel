@@ -71,6 +71,25 @@ export function validateVerificationActivity(state: State, activity: DatumEnvelo
   if (linkedInterfaces.length !== requiredInterfaces.size || linkedInterfaces.some(id => !requiredInterfaces.has(id))) throw new Error("Activity must select the exact necessary interfaces of its verified targets");
   if (!/^[a-f0-9]{40}$/.test(String(p.source_commit)) || !Array.isArray(p.verification_command) || !p.verification_command.length || !p.method || !p.results_path) throw new Error("Activity requires a method and an exact independently committed executable verifier");
 }
+/** An activity may keep an earlier revision of its action's requirement set as authoring subject
+ * while every verified target, and every interface it uses, stays selected unchanged. */
+export function authoringSubjectDiagnostic(state: State, activity: DatumEnvelope, subject: DatumEnvelope): string | undefined {
+  const authored = state.data.find(d => d.revision_id === activity.payload.authoring_subject);
+  if (authored?.revision_id === subject.revision_id) return undefined;
+  const differs = "Activity authoring subject differs from its exact action context";
+  if (!authored || authored.type !== requirementTraceBinding(state.pkg)?.type || authored.type !== subject.type || authored.id !== subject.id || authored.revision >= subject.revision) return differs;
+  const current = selectedTargets(state, subject), selected = new Set(current.map(d => d.revision_id));
+  const interfaces = current.flatMap(d => targets(d, "uses-interface")).map(id => exact(state.data, id));
+  const stale = (what: string) => `${differs}: '${authored.revision_id}' is an earlier revision of '${subject.revision_id}', but ${what} is not selected unchanged there`;
+  for (const target of targets(activity, "verifies")) {
+    if (!selected.has(target)) return stale(`verified target '${target}'`);
+    for (const used of targets(exact(state.data, target), "uses-interface")) {
+      const id = exact(state.data, used).id;
+      if (interfaces.some(i => i.id === id && i.revision_id !== used)) return stale(`interface '${used}' of verified target '${target}'`);
+    }
+  }
+  return undefined;
+}
 export function selectedActivities(state: State, product: DatumEnvelope) {
   const b = binding(state), ids = targets(product, "verification");
   if (new Set(ids).size !== ids.length) throw new Error("Select each verification activity once");
