@@ -80,6 +80,7 @@ test("compatible direct upgrades preserve accepted authority, expose required wo
     });
     await edit(original, "manifest.yaml", (m) => {
       delete m.kernel_capabilities["review-correction@1"];
+      delete m.kernel_capabilities["verification-applicability@1"];
       m.terminal = {
         when: 'exists("current-interfaces@1", {})',
         outcome: "profile-boundary-reached",
@@ -109,7 +110,7 @@ test("compatible direct upgrades preserve accepted authority, expose required wo
     });
     await edit(promptTarget, "types/RES.yaml", (t) => {
       t.payload_schema.properties.historical_observation = {type: "object"};
-      t.kernel_managed_payload_paths.push("historical_observation");
+      if (!t.kernel_managed_payload_paths.includes("historical_observation")) t.kernel_managed_payload_paths.push("historical_observation");
     });
     const previewFile = path.join(root, "preview.json");
     const prompt = await preview(promptTarget, previewFile);

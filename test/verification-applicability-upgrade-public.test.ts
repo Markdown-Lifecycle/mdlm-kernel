@@ -57,7 +57,7 @@ test("compatible applicability upgrade preserves accepted history and retains un
       manifest.kernel_capabilities["verification-applicability@1"] = {type: "RES"};
       await fs.writeFile(manifestPath, YAML.stringify(manifest));
       const typePath = path.join(packageRoot, "types/RES.yaml"), type = YAML.parse(await fs.readFile(typePath, "utf8"));
-      type.payload_schema.properties.historical_observation = {type: "object"}; type.kernel_managed_payload_paths.push("historical_observation");
+      type.payload_schema.properties.historical_observation = {type: "object"}; if (!type.kernel_managed_payload_paths.includes("historical_observation")) type.kernel_managed_payload_paths.push("historical_observation");
       await fs.writeFile(typePath, YAML.stringify(type));
     }
     const targetPackage = packageRoot;
