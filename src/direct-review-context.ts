@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { resolveType, type DatumEnvelope } from "./index.js";
 import type { DirectContext, DirectTransaction, SourceAssessmentTargets } from "./direct-contract.js";
-import { readImplementationSource, requirementTraceBinding, selectedRequirementGraph, type RequirementTraceBinding } from "./requirement-trace.js";
+import { readImplementationSource, retargetedBindings, requirementTraceBinding, selectedRequirementGraph, type RequirementTraceBinding } from "./requirement-trace.js";
 import { assessRequirements, changeImpact } from "./change-assessment.js";
 import { compareImplementationScopes } from "./requirement-trace-inspection.js";
 import { readVerificationReceiptBlob, validateVerificationReceipt, verificationRef } from "./verification-receipt.js";
@@ -29,7 +29,9 @@ export interface DirectReviewContext {
   payloadSchemas: Record<string, unknown>;
   sourceAssessmentTargets?: SourceAssessmentTargets | undefined;
   records: DatumEnvelope[];
-  requirementGraphs: {selection: string; assessment: ReturnType<typeof assessRequirements>; groups: DatumEnvelope[]; requirements: (DatumEnvelope & {leaf: boolean})[]}[];
+  requirementGraphs: {selection: string; assessment: ReturnType<typeof assessRequirements>; groups: DatumEnvelope[]; requirements: (DatumEnvelope & {leaf: boolean})[];
+    /** Unchanged requirements whose interface binding this set retargets to a newer agreement revision. */
+    interfaceRetargets?: {requirement: string; bound: string; selected: string}[]}[];
   sourceScopes: {implementation: string; scopes: DatumEnvelope[]; changes: unknown; comparison: unknown; acceptedBaseline?: {
     requirements: DatumEnvelope; change: DatumEnvelope; acceptance: DatumEnvelope; implementation: DatumEnvelope;
     source: DirectReviewContext["sources"][number]; scopes: DatumEnvelope[]; comparison: ReturnType<typeof compareImplementationScopes>;
@@ -218,7 +220,8 @@ export async function buildDirectReviewContext(context: DirectContext): Promise<
   for (const set of sets) {
     const graph = selectedRequirementGraph(data, set, trace);
     if (graph.diagnostics.length) throw new Error(`Review requirement graph '${set.revision_id}' is invalid: ${JSON.stringify(graph.diagnostics)}`);
-    result.requirementGraphs.push({selection: set.revision_id, assessment: assessRequirements(data, trace, set), groups: graph.groups, requirements: graph.requirements.map(datum => ({...datum, leaf: graph.leaves.has(datum.revision_id)}))});
+    const interfaceRetargets = graph.requirements.flatMap(requirement => retargetedBindings(data, set, requirement).map(r => ({requirement: requirement.revision_id, ...r})));
+    result.requirementGraphs.push({selection: set.revision_id, assessment: assessRequirements(data, trace, set), groups: graph.groups, requirements: graph.requirements.map(datum => ({...datum, leaf: graph.leaves.has(datum.revision_id)})), ...(interfaceRetargets.length ? {interfaceRetargets} : {})});
     // Method review starts from intent; derivation origins may contain prior product observations.
     // Explicit inputs remain in records. Other review roles retain their direct origins.
     if (reviewedActivity) continue;

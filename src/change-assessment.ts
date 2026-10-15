@@ -1,5 +1,5 @@
 import type { DatumEnvelope, ProcessDiagnostic } from "./index.js";
-import { selectedRequirementGraph, type RequirementTraceBinding } from "./requirement-trace.js";
+import { effectiveInterfaces, selectedRequirementGraph, type RequirementTraceBinding } from "./requirement-trace.js";
 
 const targets = (d: DatumEnvelope | undefined, type: string) => d?.links.filter(l => l.type === type).map(l => l.target) ?? [];
 const unique = (xs: string[]) => [...new Set(xs)].sort();
@@ -163,9 +163,14 @@ export function assessRequirements(data: DatumEnvelope[], b: RequirementTraceBin
   const baseline = find(data, targets(change, "baseline")[0]);
   const baseSet = find(data, targets(baseline, "confirms")[0]);
   const baseRequirements = baseSet ? selectedRequirementGraph(data, baseSet, b).requirements : [];
-  const changed = graph.requirements.filter(r => !baseRequirements.some(old => old.revision_id === r.revision_id));
+  // A retargeted interface is a binding change: the unchanged requirement is assessed again under the new clauses.
+  const binding = (owner: DatumEnvelope | undefined, r: DatumEnvelope) => `${r.revision_id}\0${effectiveInterfaces(data, owner, r).join()}`;
+  const changed = graph.requirements.filter(r => !baseRequirements.some(old => binding(baseSet, old) === binding(set, r)));
   const passing = currentReviews(data, b.review_type).filter(d => d.payload.outcome === "pass" && targets(d, "reviews").some(id => { const prior = find(data, id); return prior?.type === b.type && prior.id === set.id && prior.revision < set.revision; }));
-  const passedRequirements = new Set(passing.flatMap(r => rows(r.payload.requirement_assessments).filter(a => a.disposition === "valid").map(a => String(a.requirement))));
+  const passedRequirements = new Set(passing.flatMap(r => rows(r.payload.requirement_assessments).filter(a => a.disposition === "valid").flatMap(a => {
+    const requirement = find(data, String(a.requirement));
+    return requirement ? [binding(find(data, targets(r, "reviews")[0]), requirement)] : [];
+  })));
   const passedGroups = new Set(passing.flatMap(r => rows(r.payload.decomposition_assessments).filter(a => a.disposition === "adequate" && a.membership_action === "none" && rows(a.children).every(c => c.disposition === "valid")).map(a => String(a.group))));
   const groups = graph.groups.filter(g => !passedGroups.has(g.revision_id)).map(g => ({revision: g.revision_id, parent: targets(g, "parent")[0]!, children: targets(g, "child")}));
   const failed = reviews(data, b, set.revision_id).filter(r => r.payload.outcome === "fail");
@@ -189,7 +194,7 @@ export function assessRequirements(data: DatumEnvelope[], b: RequirementTraceBin
   const implementation = targets(baseline, "accepts")[0];
   const sourceScopes = data.filter(d => d.type === b.scope_type && targets(d, "belongs-to").includes(implementation ?? "") && d.links.some(l => (l.type === "implements" || l.type === "verifies") && oldChanged.includes(l.target))).map(d => d.revision_id);
   return {
-    requirements: changed.filter(r => !passedRequirements.has(r.revision_id)).map(r => r.revision_id).sort(), groups,
+    requirements: changed.filter(r => !passedRequirements.has(binding(set, r))).map(r => r.revision_id).sort(), groups,
     correction: {requirements: unique(requirementCorrections), groups: unique(groupCorrections)},
     sourceScopes: unique(sourceScopes), ...(baseline ? {baseline: baseline.revision_id} : {}), ...(change ? {change: change.revision_id} : {}),
     allowedRequirements: change ? selectedChangeScope(data, b, change, set) : graph.requirements.map(r => r.revision_id),

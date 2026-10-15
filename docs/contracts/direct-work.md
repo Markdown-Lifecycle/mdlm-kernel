@@ -294,6 +294,12 @@ The opt-in `staged-requirements@1` capability binds `type` to the requirement-tr
 
 The named elaboration action may only add exactly one decomposition group. Its parent is a requirement selected by the predecessor set. Its children include every newly added software requirement, and may also reuse existing selected requirements as shared children. Every previously selected requirement and group revision stays unchanged. Rewording, removal, new stakeholder roots and membership changes use the correction or stakeholder refinement actions. Review credit is unchanged: after a passing review, the next review assesses only the added requirements and group. Older kernels reject the capability, and compatible upgrade does not add it.
 
+### Interface retargets
+
+A requirement binds exact interface revisions with `uses-interface`. A requirement-set candidate may add `retargets-interface` links to exact ICD revisions when its package declares that relation. In that set, every selected requirement bound to an older revision of the same agreement uses the named revision instead; the requirement and its groups keep their revisions. The kernel carries each retarget to later sets in the lineage, rejects two retargets of one agreement in a set, and rejects a retarget older than the preceding set's. A requirement revision keeps its predecessor's `uses-interface` binding for every agreement it does not bind itself.
+
+Review treats a retarget as a binding change. Assessment rows include every selected requirement whose effective bindings differ from those it last passed under, or from the accepted baseline during a change, and each requirement graph in review context lists `interfaceRetargets` as `requirement`, `bound` and `selected`. The verification authoring export shows each requirement's effective bindings, so new activities link the retargeted revision. An activity is validated against its own `authoring_subject`, so an activity whose targets are unchanged stays valid and selectable after a retarget.
+
 ### Historical verification applicability
 
 The opt-in `verification-applicability@1` capability binds `type` to the existing

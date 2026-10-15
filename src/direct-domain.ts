@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { DatumEnvelope, ProcessDiagnostic } from "./index.js";
 import type { DirectFinalizationContext, DirectFinalizationResult } from "./direct-contract.js";
 import { assessRequirements, approvedChanges, deriveSourceDispositionCandidates, reviewedRequirementSet, validateChangeDatum } from "./change-assessment.js";
-import { requirementTraceBinding, latestRequirements, selectedRequirementGraph, deriveImplementationScopes, implementationSourceChanges, type RequirementTraceBinding, type SelectedRequirementGraph } from "./requirement-trace.js";
+import { requirementTraceBinding, latestRequirements, carryInterfaceRetargets, selectedRequirementGraph, deriveImplementationScopes, implementationSourceChanges, type RequirementTraceBinding, type SelectedRequirementGraph } from "./requirement-trace.js";
 
 import { independentBinding, authoringSubjectDiagnostic, validateVerificationActivity, selectedActivities, verificationStatus, currentVerificationResults, independentExecutionBinding } from "./independent-verification.js";
 
@@ -60,6 +60,13 @@ export async function finalizeDirectDomain(context: DirectFinalizationContext): 
         if (!output.datum.links.some(l => l.type === "changes-under")) output.datum.links.push({type: "changes-under", target: change});
       }
     }
+    // A requirement revision keeps its predecessor's binding for each interface agreement it does not bind itself.
+    for (const {datum} of outputData.filter(o => o.datum.type === trace.requirement_type && o.datum.revision > 1)) {
+      const prior = context.data.filter(d => d.id === datum.id).sort((a, b) => b.revision - a.revision)[0];
+      const lineage = (target: string) => context.data.find(d => d.revision_id === target)?.id ?? target;
+      const bound = new Set(datum.links.filter(l => l.type === "uses-interface").map(l => lineage(l.target)));
+      datum.links.push(...(prior?.links ?? []).filter(l => l.type === "uses-interface" && !bound.has(lineage(l.target))).map(l => ({...l})));
+    }
     if (outputData.some((o) => o.datum.type === trace.scope_type)) reject([{code: "trace-generated-output", message: "Source scopes are generated from committed source, never authored"}]);
     const allData = [...context.data, ...outputData.map((o) => o.datum)];
     for (const output of outputData.filter((o) => o.datum.type === trace.type)) {
@@ -68,6 +75,8 @@ export async function finalizeDirectDomain(context: DirectFinalizationContext): 
       output.datum.payload.publication = "recorded";
       const previousSet = context.data.filter(d => d.type === trace.type && d.id === output.datum.id).sort((a, b) => b.revision - a.revision)[0];
       if (trace.decomposition_type) for (const link of previousSet?.links.filter(l => l.type === "retires") ?? []) if (!output.datum.links.some(l => l.type === link.type && l.target === link.target)) output.datum.links.push(link);
+      const retargets = carryInterfaceRetargets(allData, previousSet, output.datum);
+      if (retargets.length) reject(retargets);
       const retired = new Set(output.datum.links.filter(l => l.type === "retires").map(l => allData.find(d => d.revision_id === l.target)?.id));
       output.datum.links.push(...latestRequirements(allData, trace).filter(d => !trace.decomposition_type || !retired.has(d.id)).map((d) => ({type: "contains", target: d.revision_id})));
       if (trace.decomposition_type) {
