@@ -42,7 +42,7 @@ product review, run the retained activities freshly and record their results on
 the same implementation; new results supersede the old observations while
 preserving their bytes and times. Old-package results cannot satisfy a new-package
 review or historical applicability. Historical reuse starts with an original
-observation under the target package and retains its immediate-predecessor rule.
+observation under the target package and retains its selection-only lineage rule.
 Completed acceptance history requires no execution solely for package selection.
 
 Kernel and Process Packages release independently. `npm ci` installs the exact private package commit pinned in the lockfile and requires authenticated access to the private Git repository. Bare initialization uses tiny; named alternatives keep their existing behavior. To initialize with separately installed data, run `node dist/mdlm.js init ../my-product --package /absolute/path/to/package-root`. Existing products retain their selected local package. See [release notes](../RELEASE-NOTES.md) for update impact.

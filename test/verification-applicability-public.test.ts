@@ -121,6 +121,16 @@ test("explicit historical RES applicability preserves execution and requires cur
     for (const field of ["source_ranges", "formal_files", "source_inventory"]) {const altered = structuredClone(current); altered.payload[field] = []; await expect(historicalApplicability(state, altered, xId, x.result)).rejects.toThrow("unchanged product");}
     await expect(historicalApplicability(state, current, newY, x.result)).rejects.toThrow("unchanged activity");
     await expect(historicalApplicability(state, current, xId, applied)).rejects.toThrow("reuse chains");
+    // A further selection-only revision still reaches the original execution, not the applied RES.
+    const revise = (d: typeof current, n: number) => ({...structuredClone(d), revision: n, revision_id: d.revision_id.replace(/r\d+$/, `r${String(n).padStart(5, "0")}`)});
+    const later = revise(current, current.revision + 1);
+    await expect(historicalApplicability({...state, data: [...state.data, later]}, later, xId, x.result)).resolves.toMatchObject({provenance: {original_result: x.result, original_implementation: priorId}});
+    const recorded = {...structuredClone(datum(applied)), revision_id: "RES-000000000000-r00001", id: "RES-000000000000", links: [...datum(applied).links, {type: "supersedes", target: applied}]}; delete recorded.payload.historical_observation;
+    await expect(historicalApplicability({...state, data: [...state.data, recorded, later]}, later, xId, x.result)).rejects.toThrow("later result");
+    const reverted = revise(changed, current.revision + 1), restored = revise(current, current.revision + 2);
+    await expect(historicalApplicability({...state, data: [...state.data, reverted, restored]}, restored, xId, x.result)).rejects.toThrow("unchanged product");
+    // A duplicate cannot stand in for a missing revision.
+    await expect(historicalApplicability({...state, data: [...state.data, later, later]}, revise(current, current.revision + 3), xId, x.result)).rejects.toThrow("every intermediate");
     const strict = {...state, pkg: {...state.pkg, kernelCapabilities: {...state.pkg.kernelCapabilities}}}; delete strict.pkg.kernelCapabilities["verification-applicability@1"];
     await expect(historicalApplicability(strict, current, xId, x.result)).rejects.toThrow("does not support");
     const saved = await readVerificationReceiptBlob(repository, x.execution.value.oid);
