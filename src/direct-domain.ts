@@ -4,6 +4,7 @@ import type { DirectFinalizationContext, DirectFinalizationResult } from "./dire
 import { assessRequirements, approvedChanges, deriveSourceDispositionCandidates, reviewedRequirementSet, validateChangeDatum } from "./change-assessment.js";
 import { requirementTraceBinding, latestRequirements, carryInterfaceRetargets, selectedRequirementGraph, deriveImplementationScopes, implementationSourceChanges, type RequirementTraceBinding, type SelectedRequirementGraph } from "./requirement-trace.js";
 
+import { checkVerifierSource } from "./docker-verification.js";
 import { independentBinding, authoringSubjectDiagnostic, validateVerificationActivity, selectedActivities, verificationStatus, currentVerificationResults, independentExecutionBinding } from "./independent-verification.js";
 
 function reject(diagnostics: ProcessDiagnostic[]): never {
@@ -167,6 +168,7 @@ export async function finalizeDirectDomain(context: DirectFinalizationContext): 
     for (const {datum} of outputData) {
       if (datum.type === independent.type) {
         validateVerificationActivity(state, datum);
+        await checkVerifierSource({repositoryPath: String(datum.payload.repository_path), sourceCommit: String(datum.payload.source_commit)});
         const subject = state.data.find(d=>d.revision_id===context.subject);
         const stale = subject && subject.type !== independent.type ? authoringSubjectDiagnostic(state, datum, subject) : undefined;
         if (stale) throw new Error(stale);

@@ -94,6 +94,48 @@ async function checked(file: string, args: string[], timeoutMs = 30_000): Promis
   return result.stdout;
 }
 
+/** Committed source archives have their own limit, separate from captured script output. */
+export const SOURCE_ARCHIVE_LIMIT = 16 * 1024 * 1024;
+
+// Count the whole archive so an oversized source reports its actual size.
+function archiveSource(repositoryPath: string, sourceCommit: string, label: string, timeoutMs = 30_000): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", ["-C", repositoryPath, "archive", "--format=tar", sourceCommit], { stdio: ["ignore", "pipe", "pipe"] });
+    const chunks: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let size = 0;
+    let problem: string | undefined;
+    const timer = setTimeout(() => { problem ??= `${label} source archive timed out.`; child.kill("SIGKILL"); }, timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= SOURCE_ARCHIVE_LIMIT) chunks.push(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => { if (stderr.length < 64) stderr.push(chunk); });
+    child.on("error", (error) => { problem ??= error.message; });
+    child.on("close", (exitCode, signal) => {
+      clearTimeout(timer);
+      if (signal) problem ??= `${label} source archive terminated by ${signal}.`;
+      if (!problem && exitCode !== 0) problem = `git archive failed: ${Buffer.concat(stderr).toString("utf8").trim()}`;
+      if (problem) reject(new Error(problem));
+      else if (size > SOURCE_ARCHIVE_LIMIT) reject(new Error(`${label} source archive for commit ${sourceCommit} is ${size} bytes, over the ${SOURCE_ARCHIVE_LIMIT}-byte (16 MiB) source limit.`));
+      else resolve(Buffer.concat(chunks));
+    });
+  });
+}
+
+/** Reject verifier commits that execution or review export cannot use. */
+export async function checkVerifierSource(input: {repositoryPath: string; sourceCommit: string}): Promise<void> {
+  if (!/^[a-f0-9]{40}$/.test(input.sourceCommit)) throw new Error("Verification source must name a full Git commit.");
+  await archiveSource(input.repositoryPath, input.sourceCommit, "Verifier");
+  const listing = (await checked("git", ["-C", input.repositoryPath, "ls-tree", "-rz", "--full-tree", input.sourceCommit])).toString("utf8");
+  for (const entry of listing.split("\0").filter(Boolean)) {
+    const match = /^(\d+) (\w+) [a-f0-9]+\t([\s\S]+)$/.exec(entry);
+    if (match && (match[1] === "100644" || match[1] === "100755") && match[2] === "blob") continue;
+    const kind = match?.[1] === "120000" ? "a symlink" : match?.[1] === "160000" ? "a submodule" : `mode ${match?.[1] ?? "unknown"}`;
+    throw new Error(`Verifier source supports regular committed files only; '${match?.[3] ?? entry}' in commit ${input.sourceCommit} is ${kind}.`);
+  }
+}
+
 export async function authenticateProductSource(input: {repositoryPath: string; sourceCommit: string}): Promise<{sourceCommit: string; sourceTree: string}> {
   if (!/^[a-f0-9]{40}$/.test(input.sourceCommit)) throw new Error("Product source must name a full Git commit.");
   const git = (args: string[]) => checked("git", ["-C", input.repositoryPath, ...args]);
@@ -161,7 +203,7 @@ export async function executeDockerVerification(input: DockerVerificationInput):
       result.scriptSha256 = verifier.scriptSha256;
     }
     directory = await mkdtemp(join(tmpdir(), "mdlm-verification-"));
-    const archive = await checked("git", ["-C", input.repositoryPath, "archive", "--format=tar", source.sourceCommit]);
+    const archive = await archiveSource(input.repositoryPath, source.sourceCommit, "Product");
     const archivePath = join(directory, "source.tar");
     await writeFile(archivePath, archive);
     const snapshot = join(directory, "source");
@@ -178,7 +220,7 @@ export async function executeDockerVerification(input: DockerVerificationInput):
     let verifierSnapshot = snapshot;
     let evidenceDirectory: string | undefined;
     if (independent) {
-      const verifierArchive = await checked("git", ["-C", independent.repositoryPath, "archive", "--format=tar", independent.sourceCommit]);
+      const verifierArchive = await archiveSource(independent.repositoryPath, independent.sourceCommit, "Verifier");
       const verifierArchivePath = join(directory, "verification.tar");
       await writeFile(verifierArchivePath, verifierArchive);
       verifierSnapshot = join(directory, "verification");

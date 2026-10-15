@@ -191,6 +191,12 @@ coverage.
 | Temporary files | Writable `/tmp` tmpfs, limited to 64 MiB, with effective `noexec,nosuid,nodev`. Docker supplies the `noexec` default; the runtime does not override it with `exec`. |
 | Execution time | The public command uses a 60-second wait for container completion. Timeout kills the container and records an error. Docker create and start each also have a 60-second timeout; this is not a 60-second limit for the whole CLI invocation. |
 | Captured output | Combined stdout and stderr capture is limited to 16 MiB. Exceeding it records an incomplete-capture error. |
+| Source size | Each committed source tree (product and verifier) must `git archive` to at most 16 MiB. A larger archive records a `source`-phase error naming the archive size before any container starts. |
+| Verifier files | The verifier commit may contain only regular committed files. Symlinks (for example `node_modules/.bin/*` from `npm install`) and submodules are rejected when the activity is published. |
+
+Verification activity publication (plan, revise and correct routes) checks the
+verifier commit's archive size and file types, and rejects the activity with the
+offending path or the actual archive size.
 
 These settings are fixed through the public CLI. There is no activity field or
 execution flag to override the timeout, PID limit, shared-memory or tmpfs size, networking or
