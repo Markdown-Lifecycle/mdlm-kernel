@@ -75,9 +75,16 @@ test("iterative requirements retain exact origins and interface context across i
     expect(review.records.find((record: any) => record.revision_id === interfaceR1)).toEqual(originalInterface);
     expect(review.records.some((record: any) => record.revision_id === interfaceR2)).toBe(false);
     const authoring = cli("verification", "context", origin);
+    const verifier = path.join(root, "verifier");
+    await fs.mkdir(verifier);
+    await fs.writeFile(path.join(verifier, "verify.py"), "print('fixture')\n");
+    execFileSync("git", ["-C", verifier, "init", "-q"]);
+    execFileSync("git", ["-C", verifier, "add", "."]);
+    execFileSync("git", ["-C", verifier, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", "Verifier fixture"]);
+    const verifierCommit = execFileSync("git", ["-C", verifier, "rev-parse", "HEAD"], {encoding: "utf8"}).trim();
     const activityGuidance = cli("expectations", "show", "plan-criterion-verification", origin);
     const activity = activityGuidance.candidates[0];
-    activity.payload = {...activity.payload, title:"Count criterion check", method:"CLI test", objective:"Observe the supplied count", authoring_subject:origin, authoring_context:authoring.authoringContext, repository_path:path.join(root,"verifier"), source_commit:"a".repeat(40), verification_image:"python@sha256:"+"b".repeat(64), verification_command:["python3","verify.py"], verification_script:"verify.py", results_path:"results.json", cases:[{id:"count",targets:[origin],preconditions:["Fresh process"],actions:["Supply two items"],expected_results:["The public output reports two"],coverage_rationale:"The criterion concerns observable item count"}],coverage:[{target:origin,obligations:["Report supplied count"],case_ids:["count"],rationale:"This fixture tests exact interface binding; execution adequacy is reviewed separately"}]};
+    activity.payload = {...activity.payload, title:"Count criterion check", method:"CLI test", objective:"Observe the supplied count", authoring_subject:origin, authoring_context:authoring.authoringContext, repository_path:verifier, source_commit:verifierCommit, verification_image:"python@sha256:"+"b".repeat(64), verification_command:["python3","verify.py"], verification_script:"verify.py", results_path:"results.json", cases:[{id:"count",targets:[origin],preconditions:["Fresh process"],actions:["Supply two items"],expected_results:["The public output reports two"],coverage_rationale:"The criterion concerns observable item count"}],coverage:[{target:origin,obligations:["Report supplied count"],case_ids:["count"],rationale:"This fixture tests exact interface binding; execution adequacy is reviewed separately"}]};
     activity.links.push({type:"verifies",target:origin});
     const planned = await submit(activityGuidance,"criterion-plan",[activity]);
     const activityRevision = planned.revisions[0];

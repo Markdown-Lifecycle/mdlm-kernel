@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
+import { executeDockerVerification } from "../src/docker-verification.js";
 
 test("committed documentation ranges cover selected leaves without weakening executable coverage", async () => {
   const root = await fs.mkdtemp(path.join(process.env.MDLM_DOCUMENTATION_TRACE_EVIDENCE_ROOT ?? os.tmpdir(), "mdlm-documentation-trace-"));
@@ -119,13 +120,13 @@ test("binary verifier evidence survives public review export, registration and p
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-binary-review-"));
   const repository = path.join(root, "lifecycle"), verifier = path.join(root, "verifier"), registry = path.join(root, "registry");
   const executable = process.env.MDLM_DIRECT_EXECUTABLE ?? path.join(process.cwd(), "dist/mdlm.js");
-  const cli = (args: string[], manager = false) => {
+  const cli = (args: string[], manager = false, status = 0) => {
     const result = spawnSync(executable.endsWith(".js") ? process.execPath : executable, [...(executable.endsWith(".js") ? [executable] : []), ...args, "--json"], {
       cwd: args[0] === "init" ? root : repository, encoding: "utf8", timeout: 30_000,
       env: {...process.env, MDLM_REVIEW_REGISTRY: registry, MDLM_REVIEW_REGISTRAR: manager ? "1" : "0"},
     });
-    expect(result.status, result.stdout + result.stderr).toBe(0);
-    return JSON.parse(result.stdout);
+    expect(result.status, result.stdout + result.stderr).toBe(status);
+    return status ? result.stdout + result.stderr : JSON.parse(result.stdout);
   };
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], {encoding: "utf8"}).trim();
   const commit = (cwd: string) => {
@@ -154,6 +155,15 @@ test("binary verifier evidence survives public review export, registration and p
     await fs.writeFile(path.join(verifier, "observation.png"), png);
     await fs.writeFile(path.join(verifier, "replay.cjs"), script);
     await fs.writeFile(path.join(verifier, "manifest.json"), manifest);
+    // Publication rejects verifier commits that review export or execution cannot use.
+    await fs.mkdir(path.join(verifier, "node_modules/.bin"), {recursive: true});
+    await fs.symlink("../tool/cli.js", path.join(verifier, "node_modules/.bin/tool"));
+    const symlinkCommit = commit(verifier);
+    await fs.rm(path.join(verifier, "node_modules"), {recursive: true});
+    await fs.writeFile(path.join(verifier, "vendor.bin"), Buffer.alloc(16 * 1024 * 1024));
+    const oversizedCommit = commit(verifier);
+    const oversizedBytes = Number(execFileSync("git", ["-C", verifier, "archive", "--format=tar", oversizedCommit], {maxBuffer: 64 * 1024 * 1024}).length);
+    await fs.rm(path.join(verifier, "vendor.bin"));
     const sourceCommit = commit(verifier);
     const pngBlob = git(verifier, "rev-parse", `${sourceCommit}:observation.png`);
     const frame = guidance("frame-experiment");
@@ -163,6 +173,13 @@ test("binary verifier evidence survives public review export, registration and p
     const plan = guidance("plan-criterion-verification", experiment);
     plan.candidates[0].payload = {...plan.candidates[0].payload, title: "Public browser observation", method: "Browser demonstration", objective: "Inspect the visible result", authoring_subject: experiment, authoring_context: authoring.authoringContext, repository_path: verifier, source_commit: sourceCommit, verification_image: "node@sha256:" + "b".repeat(64), verification_command: ["node", "replay.cjs"], verification_script: "replay.cjs", results_path: "results.json", cases: [{id: "observe", targets: [experiment], preconditions: ["Page is open"], actions: ["Perform the requested interaction"], expected_results: ["The requested result is visible"], coverage_rationale: "Directly observes the criterion"}], coverage: [{target: experiment, obligations: ["Show the requested result"], case_ids: ["observe"], rationale: "The visible result addresses the criterion"}]};
     plan.candidates[0].links = [{type: "verifies", target: experiment}];
+    const rejected = async (commit: string) => {
+      plan.candidates[0].payload.source_commit = commit;
+      return cli(["proposal", "submit", await proposalFile(plan, "plan")], false, 1);
+    };
+    expect(await rejected(symlinkCommit)).toContain(`'node_modules/.bin/tool' in commit ${symlinkCommit} is a symlink`);
+    expect(await rejected(oversizedCommit)).toContain(`Verifier source archive for commit ${oversizedCommit} is ${oversizedBytes} bytes, over the 16777216-byte (16 MiB) source limit`);
+    plan.candidates[0].payload.source_commit = sourceCommit;
     const activity = submit(await proposalFile(plan, "plan"));
     const file = path.join(root, "review-context.json");
     const exported = cli(["review", "context", "review-verification", activity, "--output", file]);
@@ -346,3 +363,19 @@ test("independent verification reports complete requirements, failures, stale ev
     const evidenceFile=path.join(root,"outcome.json");await fs.writeFile(evidenceFile,JSON.stringify({outcome,executable,repository,product,verifier,commands},null,2));process.stdout.write(`INDEPENDENT_VERIFICATION_EVIDENCE ${evidenceFile}\n`);
   }
 },180_000);
+
+test("execution reports an oversized source archive as a source-size error", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-source-size-"));
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], {encoding: "utf8"}).trim();
+  try {
+    git("init", "-q");
+    await fs.writeFile(path.join(root, "verify.py"), "print('unreachable')\n");
+    await fs.writeFile(path.join(root, "vendor.bin"), Buffer.alloc(16 * 1024 * 1024));
+    git("add", ".");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", "Oversized fixture");
+    const sourceCommit = git("rev-parse", "HEAD");
+    const result = await executeDockerVerification({repositoryPath: root, sourceCommit, image: "python@sha256:" + "a".repeat(64), command: ["python3", "verify.py"], scriptPath: "verify.py"});
+    expect(result).toMatchObject({outcome: "error", phase: "source", started: false});
+    expect(result.diagnostic).toMatch(new RegExp(`^Product source archive for commit ${sourceCommit} is \\d+ bytes, over the 16777216-byte \\(16 MiB\\) source limit\\.$`));
+  } finally { await fs.rm(root, {recursive: true, force: true}); }
+});
