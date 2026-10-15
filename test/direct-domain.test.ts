@@ -6,6 +6,7 @@ import { requirementAuthoringTargets } from "../src/direct-guidance.js";
 import { assessRequirements, validateChangeDatum } from "../src/change-assessment.js";
 import { deriveImplementationScopes, requirementTraceBinding } from "../src/requirement-trace.js";
 import { finalizeDirectDomain } from "../src/direct-domain.js";
+import { verificationAuthoringContext } from "../src/independent-verification.js";
 import type { DirectFinalizationContext } from "../src/direct-contract.js";
 
 const datum = (type: string, n: number, revision = 1): DatumEnvelope => {
@@ -168,4 +169,38 @@ test("staged packages publish partial graphs, elaborate one group additively and
   await expect(finalizeDirectDomain({...deeper, outputs: [leaf, shared, datum("RQS", 1, 3)]})).resolves.toBeDefined();
   const product = {...datum("IMP", 1), payload: {repository_path: ".", source_commit: "0".repeat(40)}, links: [{type: "implements", target: set.revision_id}]};
   expect((await deriveImplementationScopes(product, data, requirementTraceBinding(pkg)!)).diagnostics.map(d => d.code)).toContain("trace-stakeholder-uncovered");
+});
+
+test("verification may keep an earlier authoring set while its targets and interfaces stay selected unchanged", async () => {
+  const loaded = await loadProcessPackage(installedProcessPackageRoot("iterative"));
+  if (!loaded.ok) throw new Error(JSON.stringify(loaded.diagnostics));
+  const pkg = loaded.package, identity = {reference: "fixture@1", digest: "fixture", language: "fixture"};
+  const api = {...datum("ICD", 1), payload: {title: "CLI"}};
+  const root = {...datum("REQ", 1), payload: {kind: "stakeholder"}};
+  const child = {...datum("REQ", 2), payload: {kind: "software"}, links: [{type: "uses-interface", target: api.revision_id}]};
+  const later = {...datum("REQ", 3), payload: {kind: "software"}};
+  const group = (n: number, ...children: DatumEnvelope[]) => ({...datum("DCP", 1, n), links: [{type: "parent", target: root.revision_id}, ...children.map(c => ({type: "child", target: c.revision_id}))]});
+  const set = (n: number, g: DatumEnvelope, ...reqs: DatumEnvelope[]) => ({...datum("RQS", 1, n), links: [...reqs.map(r => ({type: "contains", target: r.revision_id})), {type: "decomposition", target: g.revision_id}]});
+  const g1 = group(1, child), g2 = group(2, child, later);
+  const authored = set(1, g1, root, child), elaborated = set(2, g2, root, child, later);
+  const data: DatumEnvelope[] = [api, root, child, later, g1, g2, authored, elaborated];
+  const activity = {...datum("VFY", 1), links: [{type: "verifies", target: child.revision_id}, {type: "uses-interface", target: api.revision_id}],
+    payload: {title: "CLI check", method: "CLI test", objective: "Observe output", authoring_subject: authored.revision_id,
+      authoring_context: verificationAuthoringContext({pkg, package: identity, data}, authored.revision_id).authoringContext,
+      repository_path: "/verifier", source_commit: "a".repeat(40), verification_image: "python@sha256:" + "b".repeat(64), verification_command: ["python3", "verify.py"], verification_script: "verify.py", results_path: "results.json",
+      cases: [{id: "cli", targets: [child.revision_id], preconditions: ["Fresh process"], actions: ["Invoke"], expected_results: ["Output"], coverage_rationale: "Public output"}],
+      coverage: [{target: child.revision_id, obligations: ["Output"], case_ids: ["cli"], rationale: "Public output"}]}};
+  const publish = async (subject: DatumEnvelope, extra: DatumEnvelope[] = []) => finalizeDirectDomain({...await context([...data, ...extra], [activity]), pkg, action: pkg.actions["plan-verification"]!, package: identity, subject: subject.revision_id, inputs: {subject: [subject.revision_id]}});
+  await expect(publish(elaborated)).resolves.toBeDefined();
+  // A revised target or a changed interface revision in the current set makes the earlier subject stale.
+  const revised = {...child, revision: 2, revision_id: `${child.id}-r00002`};
+  const g3 = group(3, revised, later), changed = set(3, g3, root, revised, later);
+  await expect(publish(changed, [revised, g3, changed])).rejects.toThrow(`verified target '${child.revision_id}' is not selected unchanged`);
+  const api2 = {...api, revision: 2, revision_id: `${api.id}-r00002`}, user = {...later, revision: 2, revision_id: `${later.id}-r00002`, links: [{type: "uses-interface", target: api2.revision_id}]};
+  const g4 = group(4, child, user), moved = set(4, g4, root, child, user);
+  await expect(publish(moved, [api2, user, g4, moved])).rejects.toThrow(`interface '${api.revision_id}' of verified target '${child.revision_id}' is not selected unchanged`);
+  // Only earlier revisions of the same lineage qualify.
+  const other = {...set(1, g2, root, child, later), id: "RQS-0000000002", revision_id: "RQS-0000000002-r00001"};
+  await expect(publish(other, [other])).rejects.toThrow("Activity authoring subject differs from its exact action context");
+  await expect(finalizeDirectDomain({...await context(data, [{...activity, payload: {...activity.payload, authoring_subject: elaborated.revision_id, authoring_context: verificationAuthoringContext({pkg, package: identity, data}, elaborated.revision_id).authoringContext}}]), pkg, action: pkg.actions["plan-verification"]!, package: identity, subject: authored.revision_id})).rejects.toThrow("Activity authoring subject differs from its exact action context");
 });
