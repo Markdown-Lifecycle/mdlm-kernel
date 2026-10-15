@@ -220,3 +220,7 @@ _Avoid_: Assuming retained historical evidence implies current runtime support
 **Interface Control Document (ICD)**:
 A versioned agreement describing both sides of a meaningful boundary, their responsibilities, exchanged information, failure behavior and assumptions. It can contain provisional design choices; requirements state necessary obligations. Exact uses determine its review and acceptance context.
 _Avoid_: Requirement when referring to all interface design detail, protocol version when referring to lifecycle revision identity
+
+**Interface retarget**:
+A requirement set's declared adoption of a newer revision of an agreement for every selected requirement bound to an older one, without revising those requirements. Review judges each retargeted requirement under the new clauses.
+_Avoid_: Link-only requirement revision

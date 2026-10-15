@@ -6,7 +6,7 @@ import { requirementAuthoringTargets } from "../src/direct-guidance.js";
 import { assessRequirements, validateChangeDatum } from "../src/change-assessment.js";
 import { deriveImplementationScopes, requirementTraceBinding } from "../src/requirement-trace.js";
 import { finalizeDirectDomain } from "../src/direct-domain.js";
-import { verificationAuthoringContext } from "../src/independent-verification.js";
+import { authoringSubjectDiagnostic, validateVerificationActivity, verificationAuthoringContext } from "../src/independent-verification.js";
 import type { DirectFinalizationContext } from "../src/direct-contract.js";
 
 const datum = (type: string, n: number, revision = 1): DatumEnvelope => {
@@ -203,4 +203,59 @@ test("verification may keep an earlier authoring set while its targets and inter
   const other = {...set(1, g2, root, child, later), id: "RQS-0000000002", revision_id: "RQS-0000000002-r00001"};
   await expect(publish(other, [other])).rejects.toThrow("Activity authoring subject differs from its exact action context");
   await expect(finalizeDirectDomain({...await context(data, [{...activity, payload: {...activity.payload, authoring_subject: elaborated.revision_id, authoring_context: verificationAuthoringContext({pkg, package: identity, data}, elaborated.revision_id).authoringContext}}]), pkg, action: pkg.actions["plan-verification"]!, package: identity, subject: authored.revision_id})).rejects.toThrow("Activity authoring subject differs from its exact action context");
+});
+
+test("a set retargets unchanged requirements to a newer interface revision without revising them or their activities", async () => {
+  const loaded = await loadProcessPackage(installedProcessPackageRoot("iterative"));
+  if (!loaded.ok) throw new Error(JSON.stringify(loaded.diagnostics));
+  const pkg = {...loaded.package, kernelCapabilities: {...loaded.package.kernelCapabilities, "interface-retarget@1": {type: "RQS"}}}, trace = requirementTraceBinding(pkg)!;
+  const icd = [1, 2, 3].map(revision => ({...datum("ICD", 1, revision), payload: {title: "Feed", clause: `RF-2 revision ${revision}`}}));
+  const uses = (revision: number) => [{type: "uses-interface", target: icd[revision - 1]!.revision_id}];
+  const root = {...datum("REQ", 1), payload: {kind: "stakeholder", statement: "Answer feed requests (RF-2)"}, links: uses(1)};
+  const leaf = {...datum("REQ", 2), payload: {kind: "software"}, links: uses(1)};
+  const group = {...datum("DCP", 1), links: [{type: "parent", target: root.revision_id}, {type: "child", target: leaf.revision_id}]};
+  const publish = async (data: DatumEnvelope[], outputs: DatumEnvelope[]) => finalizeDirectDomain({...await context(data, outputs), pkg});
+  const first = await publish(icd, [root, leaf, group, datum("RQS", 1)]);
+  const data = [...icd, ...first.outputs];
+  const set = first.outputs.find(d => d.type === "RQS")!;
+
+  // One declared step: no requirement or group revision, and the next set keeps the retarget.
+  const retarget = {...datum("RQS", 1, 2), links: [{type: "retargets-interface", target: icd[1]!.revision_id}]};
+  await expect(finalizeDirectDomain({...await context(data, [retarget]), pkg: loaded.package})).rejects.toThrow("interface-retarget-capability");
+  const retargeted = await publish(data, [retarget]);
+  expect(retargeted.outputs.map(d => d.type)).toEqual(["RQS"]);
+  const set2 = retargeted.outputs[0]!;
+  data.push(set2);
+  const carried = (await publish(data, [datum("RQS", 1, 3)])).outputs[0]!;
+  expect(carried.links).toContainEqual({type: "retargets-interface", target: icd[1]!.revision_id});
+  await expect(publish(data, [{...datum("RQS", 1, 3), links: uses(1).map(l => ({...l, type: "retargets-interface"}))}])).rejects.toThrow("interface-retarget-regress");
+  await expect(publish(data, [{...datum("RQS", 1, 3), links: [1, 2].map(r => ({type: "retargets-interface", target: icd[r]!.revision_id}))}])).rejects.toThrow("interface-retarget-lineage");
+
+  // Review assesses the retargeted requirements again; it does not reassess unchanged groups.
+  const pass = {...datum("REV", 1), payload: {outcome: "pass", requirement_assessments: [root, leaf].map(r => ({requirement: r.revision_id, disposition: "valid"})), decomposition_assessments: [{group: group.revision_id, disposition: "adequate", membership_action: "none", children: [{requirement: leaf.revision_id, disposition: "valid"}]}]}, links: [{type: "reviews", target: set.revision_id}]};
+  expect(assessRequirements([...data, pass], trace, set2)).toMatchObject({requirements: [root.revision_id, leaf.revision_id], groups: []});
+  const pass2 = {...datum("REV", 2), payload: {...pass.payload, decomposition_assessments: []}, links: [{type: "reviews", target: set2.revision_id}]};
+  expect(assessRequirements([...data, pass, pass2, carried], trace, carried).requirements).toEqual([]);
+
+  // A requirement revision keeps its predecessor's binding unless it binds that agreement itself.
+  const reworded = {...root, revision: 2, revision_id: `${root.id}-r00002`, links: []};
+  expect((await publish(data, [reworded, datum("RQS", 1, 3)])).outputs.find(d => d.id === root.id)?.links).toEqual(uses(1));
+  // Binding a newer revision than the set's retarget requires advancing the retarget, so the set keeps one revision.
+  await expect(publish(data, [{...reworded, links: uses(3)}, datum("RQS", 1, 3)])).rejects.toThrow("interface-retarget-behind");
+  const advanced = {...datum("RQS", 1, 3), links: [{type: "retargets-interface", target: icd[2]!.revision_id}]};
+  expect((await publish(data, [{...reworded, links: uses(3)}, advanced])).outputs.find(d => d.id === root.id)?.links).toEqual(uses(3));
+
+  // Verification authored before the retarget stays valid; new authoring sees the retargeted clauses.
+  const state = {pkg, package: {reference: "fixture@1", digest: "fixture"}, data};
+  const activity = (subject: DatumEnvelope, revision: number): DatumEnvelope => ({...datum("VFY", 1), links: [{type: "verifies", target: leaf.revision_id}, ...uses(revision)], payload: {
+    method: "Public feed requests", authoring_subject: subject.revision_id, authoring_context: verificationAuthoringContext(state, subject.revision_id).authoringContext,
+    cases: [{id: "feed", targets: [leaf.revision_id], preconditions: ["Meter started"], actions: ["Request the feed"], expected_results: ["Answered"], coverage_rationale: "Observes RF-2"}],
+    coverage: [{target: leaf.revision_id, obligations: ["Answer"], case_ids: ["feed"], rationale: "Public request"}],
+    source_commit: "b".repeat(40), verification_command: ["node", "verify.js"], results_path: "results.json"}});
+  expect(verificationAuthoringContext(state, set2.revision_id).interfaces.map(i => i.revision_id)).toEqual([icd[1]!.revision_id]);
+  expect(() => validateVerificationActivity(state, activity(set, 1))).not.toThrow();
+  expect(() => validateVerificationActivity(state, activity(set2, 2))).not.toThrow();
+  expect(() => validateVerificationActivity(state, activity(set2, 1))).toThrow("exact necessary interfaces");
+  // A new activity cannot be published against the retargeted set from an export of the earlier one.
+  expect(authoringSubjectDiagnostic(state, activity(set, 1), set2)).toContain(`interface '${icd[0]!.revision_id}'`);
 });

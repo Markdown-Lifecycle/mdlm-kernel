@@ -81,7 +81,7 @@ export async function previewProcessUpgrade(
   // These additive services preserve every existing capability binding.
   const oldCapabilities = current.pkg.manifest.kernel_capabilities as Record<string, unknown>;
   const newCapabilities = target.manifest.kernel_capabilities as Record<string, unknown>;
-  if (Object.entries(oldCapabilities).some(([name, binding]) => !isDeepStrictEqual(binding, newCapabilities[name])) || Object.keys(newCapabilities).some(name => !(name in oldCapabilities) && !["review-correction@1", "verification-applicability@1"].includes(name))) throw new Error("Incompatible upgrade kernel_capabilities");
+  if (Object.entries(oldCapabilities).some(([name, binding]) => !isDeepStrictEqual(binding, newCapabilities[name])) || Object.keys(newCapabilities).some(name => !(name in oldCapabilities) && !["review-correction@1", "verification-applicability@1", "interface-retarget@1"].includes(name))) throw new Error("Incompatible upgrade kernel_capabilities");
   if (
     !isDeepStrictEqual(
       repositorySummary(current.pkg),

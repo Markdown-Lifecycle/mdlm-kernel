@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { DatumEnvelope, ProcessPackage } from "./index.js";
 import type { ProcessSelection } from "./repository-contract.js";
 import { authenticatedAuthoringPackage } from "./lifecycle-repository.js";
-import { requirementTraceBinding, selectedRequirementGraph } from "./requirement-trace.js";
+import { boundLinks, effectiveInterfaces, requirementTraceBinding, selectedRequirementGraph } from "./requirement-trace.js";
 import type { VerificationBinding } from "./verification-receipt.js";
 
 type State = {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; authoringSelections?: readonly ProcessSelection[]};
@@ -25,10 +25,12 @@ export function verificationAuthoringContext(state: State, subjectId: string) {
   const subject = exact(state.data, subjectId), requirements = selectedTargets(state, subject);
   const trace = requirementTraceBinding(state.pkg);
   const groups = subject.type === trace?.type ? selectedRequirementGraph(state.data, subject, trace).groups : [];
-  const interfaceIds = new Set(requirements.flatMap(d => targets(d, "uses-interface")));
+  // Requirement records show the interfaces they bind in this set, including set-level retargets.
+  const bound = (d: DatumEnvelope) => subject.type === trace?.type ? {...d, links: boundLinks(state.data, subject, d)} : d;
+  const interfaceIds = new Set(requirements.flatMap(d => targets(bound(d), "uses-interface")));
   const interfaces = [...interfaceIds].sort().map(id => exact(state.data, id));
   const record = (d: DatumEnvelope) => ({revision_id: d.revision_id, type: d.type, payload: d.payload, body: d.body, links: d.links.filter(l => ["uses-interface", "parent", "child"].includes(l.type))});
-  const context = {contract: "mdlm-verification-authoring@1", package: state.package, subject: subjectId, requirements: requirements.map(record), decomposition: groups.map(record), interfaces: interfaces.map(record), instructions: "Author intended actions and expected results from this intent only. Use public interfaces, not implementation source or existing product tests. Explain coverage of every obligation. Method and tool must fit the claim; a passing case is evidence within its stated limits."};
+  const context = {contract: "mdlm-verification-authoring@1", package: state.package, subject: subjectId, requirements: requirements.map(d => record(bound(d))), decomposition: groups.map(record), interfaces: interfaces.map(record), instructions: "Author intended actions and expected results from this intent only. Use public interfaces, not implementation source or existing product tests. Explain coverage of every obligation. Method and tool must fit the claim; a passing case is evidence within its stated limits."};
   return {...context, authoringContext: `sha256:${createHash("sha256").update(JSON.stringify(context)).digest("hex")}`};
 }
 export function validateVerificationActivity(state: State, activity: DatumEnvelope) {
@@ -66,7 +68,7 @@ export function validateVerificationActivity(state: State, activity: DatumEnvelo
     if (JSON.stringify([...claim.case_ids].sort()) !== JSON.stringify(declaredCases)) throw new Error("Coverage must retain every declared case targeting that requirement");
     if (!selected.includes(claim.target) || !claim.obligations?.length || claim.obligations.some(o => !o.trim()) || !claim.rationale?.trim() || !claim.case_ids?.length || new Set(claim.case_ids).size !== claim.case_ids.length || claim.case_ids.some(id => !cases.some(c => c.id === id && c.targets.includes(claim.target)))) throw new Error("Coverage must name its obligations and the cases addressing that exact target");
   }
-  const requiredInterfaces = new Set(selected.flatMap(id => targets(exact(state.data, id), "uses-interface")));
+  const requiredInterfaces = new Set(context.requirements.filter(r => selected.includes(r.revision_id)).flatMap(r => r.links.filter(l => l.type === "uses-interface").map(l => l.target)));
   const linkedInterfaces = targets(activity, "uses-interface");
   if (linkedInterfaces.length !== requiredInterfaces.size || linkedInterfaces.some(id => !requiredInterfaces.has(id))) throw new Error("Activity must select the exact necessary interfaces of its verified targets");
   if (!/^[a-f0-9]{40}$/.test(String(p.source_commit)) || !Array.isArray(p.verification_command) || !p.verification_command.length || !p.method || !p.results_path) throw new Error("Activity requires a method and an exact independently committed executable verifier");
@@ -79,11 +81,11 @@ export function authoringSubjectDiagnostic(state: State, activity: DatumEnvelope
   const differs = "Activity authoring subject differs from its exact action context";
   if (!authored || authored.type !== requirementTraceBinding(state.pkg)?.type || authored.type !== subject.type || authored.id !== subject.id || authored.revision >= subject.revision) return differs;
   const current = selectedTargets(state, subject), selected = new Set(current.map(d => d.revision_id));
-  const interfaces = current.flatMap(d => targets(d, "uses-interface")).map(id => exact(state.data, id));
+  const interfaces = current.flatMap(d => effectiveInterfaces(state.data, subject, d)).map(id => exact(state.data, id));
   const stale = (what: string) => `${differs}: '${authored.revision_id}' is an earlier revision of '${subject.revision_id}', but ${what} is not selected unchanged there`;
   for (const target of targets(activity, "verifies")) {
     if (!selected.has(target)) return stale(`verified target '${target}'`);
-    for (const used of targets(exact(state.data, target), "uses-interface")) {
+    for (const used of effectiveInterfaces(state.data, authored, exact(state.data, target))) {
       const id = exact(state.data, used).id;
       if (interfaces.some(i => i.id === id && i.revision_id !== used)) return stale(`interface '${used}' of verified target '${target}'`);
     }

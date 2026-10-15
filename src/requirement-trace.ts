@@ -32,6 +32,63 @@ export function latestRequirements(data: DatumEnvelope[], binding: RequirementTr
   }
   return [...latest.values()].sort((a, b) => a.revision_id.localeCompare(b.revision_id));
 }
+/** A set's `retargets-interface` links name the revision it selects for each agreement lineage. */
+export function interfaceRetargets(data: DatumEnvelope[], set: DatumEnvelope | undefined): Map<string, DatumEnvelope> {
+  const retargets = new Map<string, DatumEnvelope>();
+  for (const link of set?.links.filter(l => l.type === "retargets-interface") ?? []) {
+    const datum = data.find(d => d.revision_id === link.target);
+    if (datum) retargets.set(datum.id, datum);
+  }
+  return retargets;
+}
+/** A requirement's interface bindings that its set moves to a newer revision of the same agreement. */
+export function retargetedBindings(data: DatumEnvelope[], set: DatumEnvelope | undefined, requirement: DatumEnvelope): {bound: string; selected: string}[] {
+  const retargets = interfaceRetargets(data, set);
+  return requirement.links.filter(l => l.type === "uses-interface").flatMap(l => {
+    const bound = data.find(d => d.revision_id === l.target);
+    const selected = bound && retargets.get(bound.id);
+    return selected && selected.revision > bound.revision ? [{bound: l.target, selected: selected.revision_id}] : [];
+  });
+}
+/** A requirement's links within a set, with retargeted interface bindings replaced in place. */
+export function boundLinks(data: DatumEnvelope[], set: DatumEnvelope | undefined, requirement: DatumEnvelope): DatumEnvelope["links"] {
+  const moved = new Map(retargetedBindings(data, set, requirement).map(r => [r.bound, r.selected]));
+  if (!moved.size) return requirement.links;
+  const seen = new Set<string>();
+  return requirement.links.flatMap(link => {
+    if (link.type !== "uses-interface") return [link];
+    const target = moved.get(link.target) ?? link.target;
+    if (seen.has(target)) return [];
+    seen.add(target);
+    return [{...link, target}];
+  });
+}
+export const effectiveInterfaces = (data: DatumEnvelope[], set: DatumEnvelope | undefined, requirement: DatumEnvelope): string[] =>
+  boundLinks(data, set, requirement).filter(l => l.type === "uses-interface").map(l => l.target);
+/** Retargets carry forward to successor sets; a set may advance a lineage but not return to an older revision.
+ * Call after the set's `contains` selection is derived. */
+export function carryInterfaceRetargets(data: DatumEnvelope[], previous: DatumEnvelope | undefined, set: DatumEnvelope, enabled: boolean): ProcessDiagnostic[] {
+  const declared = set.links.filter(l => l.type === "retargets-interface").map(l => data.find(d => d.revision_id === l.target));
+  const fail = (code: string, message: string) => [{code, message, path: set.revision_id}];
+  if (declared.length && !enabled) return fail("interface-retarget-capability", "Interface retargets require a package declaring interface-retarget@1");
+  if (declared.some(d => !d)) return fail("interface-retarget-reference", "Interface retargets must name exact recorded interface revisions");
+  const lineages = declared.map(d => d!.id);
+  if (new Set(lineages).size !== lineages.length) return fail("interface-retarget-lineage", "Retarget each interface agreement to one exact revision");
+  for (const [id, prior] of interfaceRetargets(data, previous)) {
+    const next = declared.find(d => d!.id === id);
+    if (!next) set.links.push({type: "retargets-interface", target: prior.revision_id});
+    else if (next.revision < prior.revision) return fail("interface-retarget-regress", `Interface retarget '${next.revision_id}' is older than the preceding set's '${prior.revision_id}'`);
+  }
+  // One revision per retargeted agreement: a requirement binding a newer revision needs the retarget advanced too.
+  const retargets = interfaceRetargets(data, set);
+  for (const id of set.links.filter(l => l.type === "contains").map(l => l.target)) {
+    for (const link of data.find(d => d.revision_id === id)?.links.filter(l => l.type === "uses-interface") ?? []) {
+      const bound = data.find(d => d.revision_id === link.target), selected = bound && retargets.get(bound.id);
+      if (selected && bound.revision > selected.revision) return fail("interface-retarget-behind", `Requirement '${id}' binds '${bound.revision_id}', newer than the set's retarget '${selected.revision_id}'; retarget the set to '${bound.revision_id}'`);
+    }
+  }
+  return [];
+}
 export interface SelectedRequirementGraph {
   requirements: DatumEnvelope[];
   leaves: Set<string>;
