@@ -208,7 +208,7 @@ test("verification may keep an earlier authoring set while its targets and inter
 test("a set retargets unchanged requirements to a newer interface revision without revising them or their activities", async () => {
   const loaded = await loadProcessPackage(installedProcessPackageRoot("iterative"));
   if (!loaded.ok) throw new Error(JSON.stringify(loaded.diagnostics));
-  const pkg = loaded.package, trace = requirementTraceBinding(pkg)!;
+  const pkg = {...loaded.package, kernelCapabilities: {...loaded.package.kernelCapabilities, "interface-retarget@1": {type: "RQS"}}}, trace = requirementTraceBinding(pkg)!;
   const icd = [1, 2, 3].map(revision => ({...datum("ICD", 1, revision), payload: {title: "Feed", clause: `RF-2 revision ${revision}`}}));
   const uses = (revision: number) => [{type: "uses-interface", target: icd[revision - 1]!.revision_id}];
   const root = {...datum("REQ", 1), payload: {kind: "stakeholder", statement: "Answer feed requests (RF-2)"}, links: uses(1)};
@@ -221,6 +221,7 @@ test("a set retargets unchanged requirements to a newer interface revision witho
 
   // One declared step: no requirement or group revision, and the next set keeps the retarget.
   const retarget = {...datum("RQS", 1, 2), links: [{type: "retargets-interface", target: icd[1]!.revision_id}]};
+  await expect(finalizeDirectDomain({...await context(data, [retarget]), pkg: loaded.package})).rejects.toThrow("interface-retarget-capability");
   const retargeted = await publish(data, [retarget]);
   expect(retargeted.outputs.map(d => d.type)).toEqual(["RQS"]);
   const set2 = retargeted.outputs[0]!;
@@ -239,7 +240,10 @@ test("a set retargets unchanged requirements to a newer interface revision witho
   // A requirement revision keeps its predecessor's binding unless it binds that agreement itself.
   const reworded = {...root, revision: 2, revision_id: `${root.id}-r00002`, links: []};
   expect((await publish(data, [reworded, datum("RQS", 1, 3)])).outputs.find(d => d.id === root.id)?.links).toEqual(uses(1));
-  expect((await publish(data, [{...reworded, links: uses(3)}, datum("RQS", 1, 3)])).outputs.find(d => d.id === root.id)?.links).toEqual(uses(3));
+  // Binding a newer revision than the set's retarget requires advancing the retarget, so the set keeps one revision.
+  await expect(publish(data, [{...reworded, links: uses(3)}, datum("RQS", 1, 3)])).rejects.toThrow("interface-retarget-behind");
+  const advanced = {...datum("RQS", 1, 3), links: [{type: "retargets-interface", target: icd[2]!.revision_id}]};
+  expect((await publish(data, [{...reworded, links: uses(3)}, advanced])).outputs.find(d => d.id === root.id)?.links).toEqual(uses(3));
 
   // Verification authored before the retarget stays valid; new authoring sees the retargeted clauses.
   const state = {pkg, package: {reference: "fixture@1", digest: "fixture"}, data};

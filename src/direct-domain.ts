@@ -75,10 +75,10 @@ export async function finalizeDirectDomain(context: DirectFinalizationContext): 
       output.datum.payload.publication = "recorded";
       const previousSet = context.data.filter(d => d.type === trace.type && d.id === output.datum.id).sort((a, b) => b.revision - a.revision)[0];
       if (trace.decomposition_type) for (const link of previousSet?.links.filter(l => l.type === "retires") ?? []) if (!output.datum.links.some(l => l.type === link.type && l.target === link.target)) output.datum.links.push(link);
-      const retargets = carryInterfaceRetargets(allData, previousSet, output.datum);
-      if (retargets.length) reject(retargets);
       const retired = new Set(output.datum.links.filter(l => l.type === "retires").map(l => allData.find(d => d.revision_id === l.target)?.id));
       output.datum.links.push(...latestRequirements(allData, trace).filter(d => !trace.decomposition_type || !retired.has(d.id)).map((d) => ({type: "contains", target: d.revision_id})));
+      const retargets = carryInterfaceRetargets(allData, previousSet, output.datum, !!context.pkg.kernelCapabilities["interface-retarget@1"]);
+      if (retargets.length) reject(retargets);
       if (trace.decomposition_type) {
         const selected = new Map(latestRequirements(allData, trace).filter(d => !retired.has(d.id)).map(d => [d.id, d]));
         const previousSets = context.data.filter(d => d.type === trace.type && d.id === output.datum.id).sort((a, b) => b.revision - a.revision);
