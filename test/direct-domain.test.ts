@@ -6,7 +6,7 @@ import { requirementAuthoringTargets } from "../src/direct-guidance.js";
 import { assessRequirements, validateChangeDatum } from "../src/change-assessment.js";
 import { deriveImplementationScopes, requirementTraceBinding } from "../src/requirement-trace.js";
 import { finalizeDirectDomain } from "../src/direct-domain.js";
-import { validateVerificationActivity, verificationAuthoringContext } from "../src/independent-verification.js";
+import { authoringSubjectDiagnostic, validateVerificationActivity, verificationAuthoringContext } from "../src/independent-verification.js";
 import type { DirectFinalizationContext } from "../src/direct-contract.js";
 
 const datum = (type: string, n: number, revision = 1): DatumEnvelope => {
@@ -252,4 +252,6 @@ test("a set retargets unchanged requirements to a newer interface revision witho
   expect(() => validateVerificationActivity(state, activity(set, 1))).not.toThrow();
   expect(() => validateVerificationActivity(state, activity(set2, 2))).not.toThrow();
   expect(() => validateVerificationActivity(state, activity(set2, 1))).toThrow("exact necessary interfaces");
+  // A new activity cannot be published against the retargeted set from an export of the earlier one.
+  expect(authoringSubjectDiagnostic(state, activity(set, 1), set2)).toContain(`interface '${icd[0]!.revision_id}'`);
 });
