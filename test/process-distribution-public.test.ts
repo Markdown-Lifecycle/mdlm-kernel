@@ -15,7 +15,7 @@ test("independent process data initializes named and external packages with exac
     const declaredVersion = JSON.parse(await fs.readFile(path.join(process.cwd(), "package.json"), "utf8")).version;
     expect(version).toBe(declaredVersion);
     expect(cli("release-notes").notes.split("\n")).toContain(`# ${version}`);
-    for (const [name, reference] of [["tiny", "mdlm-tiny@1.0.1"], ["exploratory", "mdlm-exploratory@1.0.0"], ["iterative", "mdlm-iterative@2.5.44"]] as const) {
+    for (const [name, reference] of [["tiny", "mdlm-tiny@1.0.1"], ["exploratory", "mdlm-exploratory@1.0.0"], ["iterative", "mdlm-iterative@2.5.46"]] as const) {
       const destination = path.join(root, name);
       const initialized = cli("init", destination, ...(name === "tiny" ? [] : ["--process", name]));
       expect(initialized.package.reference).toBe(reference);
@@ -25,7 +25,7 @@ test("independent process data initializes named and external packages with exac
     const external = path.join(root, "external");
     const fixture = path.join(root, "separate-package");
     await fs.cp(installedProcessPackageRoot("iterative"), fixture, {recursive: true});
-    expect(cli("init", external, "--package", fixture).package.reference).toBe("mdlm-iterative@2.5.44");
+    expect(cli("init", external, "--package", fixture).package.reference).toBe("mdlm-iterative@2.5.46");
     const conflict = path.join(root, "conflict");
     expect(spawnSync(process.execPath, [executable, "init", conflict, "--package", fixture, "--process", "iterative", "--json"], {cwd: root}).status).toBe(1);
     await expect(fs.stat(conflict)).rejects.toMatchObject({code: "ENOENT"});
