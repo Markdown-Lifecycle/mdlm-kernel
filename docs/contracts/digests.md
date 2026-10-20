@@ -47,8 +47,10 @@ order changes the snapshot, even though the JSON is equivalent. That
 invalidation is deliberate and conservative. The vectors include one datum in
 two key orders with different digests.
 
-No filesystem path enters the snapshot, but a clone or copy shares the root
-commit and so shares the snapshot. See the [direct-work contract](direct-work.md).
+The lifecycle root path is not part of the snapshot, although datum payloads
+may themselves hold paths such as `repository_path`. A clone or copy shares the
+root commit, so it has the same snapshot whenever its package and data also
+match. See the [direct-work contract](direct-work.md).
 
 ## Proposal digest
 
@@ -86,8 +88,9 @@ Two identities include the lifecycle repository's absolute path, so a moved or
 cloned repository changes them:
 
 - **Review context.** The context's `action` carries each compiled
-  expression's `contract.definitionPath`, the absolute real path of the
-  package's action file (for example
+  expression's `contract.definitionPath`, the absolute path of the package's
+  action file. That path is resolved lexically (`path.resolve`), so any
+  symlinks in it are kept (for example
   `/srv/mdlm/lane-a/.lifecycle/packages/<ref>/actions/<id>.yaml#when`). That
   path is inside the `contextSha256` preimage, so the same review at another
   path has a different `contextSha256`.
