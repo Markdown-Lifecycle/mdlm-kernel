@@ -47,10 +47,12 @@ All ref changes are compare-and-swap `git update-ref` calls.
    process and recorded that token as released after its delete kept failing. A waiter replaces an abandoned
    lease by swapping the ref from the observed blob to its own. A permission
    error from `kill` means the holder may be alive, so the lease is live.
-3. **Renew.** Before committing, the holder writes a new blob with a later
+3. **Renew.** To fence a commit, the holder writes a new blob with a later
    `expiresAt` and the same `token`, and swaps the ref from its previous blob.
    If that swap fails, the lease was lost and the holder aborts without
-   committing.
+   committing. Today the publication lease is renewed before every data move,
+   and `upgrade apply` renews its transaction lease before installing. The
+   other transaction-lease holders do not renew.
 4. **Release.** Delete the ref only if it still points to the holder's blob
    (`update-ref -d <ref> <blob>`). A ref that already points elsewhere is left
    alone.
