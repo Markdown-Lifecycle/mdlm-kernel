@@ -26,9 +26,21 @@ has to confirm them first.
 A package action of a new kernel action kind, `deployment`, deploys one exact
 product commit. The package declares a deployment record type (`DPL`). It links
 the DPL to the product revision it deploys (`deploys`) and declares the kernel
-capability `aws-cdk-deployment@1`. `mdlm deployment run <DPL> <operation>` runs
-the product's committed CDK app in a pinned deployer image (section 4). The
-kernel then fills the DPL's kernel-managed fields from a **deployment receipt**,
+capability `aws-cdk-deployment@1`. `mdlm deployment run <DPL> <operation>` has
+two steps:
+
+1. **Synthesize in the sandbox.** The product's committed CDK app runs as
+   `cdk synth` in a pinned synth image under today's runtime (with the 300-second wait), with
+   `--network none` and no credentials, and writes the cloud assembly
+   (`cdk.out`) to `/evidence`. All product code, including Lambda bundling with
+   esbuild, runs here.
+2. **Deploy from the host.** The kernel runs a pinned CDK CLI on the host as
+   `cdk deploy --app <cdk.out>` with the operator's APM profile (section 3).
+   Deploying a pre-synthesized assembly uploads its file assets and deploys its
+   template without executing product code (**unverified** with
+   `CliCredentialsStackSynthesizer` through APM; D1 checks it first).
+
+The kernel then fills the DPL's kernel-managed fields from a **deployment receipt**,
 just as it fills RES fields from an Execution Receipt today
 (`src/direct-proposal.ts:260-280`).
 
@@ -38,7 +50,8 @@ write-once attempt record, refs created only if absent
 silently re-run. Its next step is a teardown or an orphan check, not a second
 deploy. The receipt records:
 
-- **Source:** product commit and tree, deployer image digest, and the CDK app path.
+- **Source:** product commit and tree, synth image digest, CDK app path, and
+  the host CDK CLI version.
 - **What was deployed:** SHA-256 of the synthesized CloudFormation template and
   of each asset in `cdk.out/manifest.json`. These come from the commit, not from
   AWS, so the same commit and image should yield the same digests (**unverified**
@@ -83,7 +96,7 @@ An independent verification activity may link to one exact DPL
 - **Endpoint and version come from the kernel:** the kernel reads the endpoint
   from the DPL receipt and passes it as `MDLM_ENDPOINT`. The author does not
   supply it. Before and after the run, the kernel repeats the version probe and
-  re-reads the stack's `LastUpdatedTime` through the deployer path. The
+  re-reads the stack's `LastUpdatedTime` from the host with the APM profile. The
   Execution Receipt gains the DPL revision, the endpoint, both probe results and
   the proxy's connection log (host, port, bytes and time, never request bodies).
   If a probe disagrees or the stack changed during the run, the outcome is
@@ -116,30 +129,34 @@ credentials.
   - CDK's default synthesizer deploys by assuming bootstrap roles, so it can't
     run through APM. Products use `CliCredentialsStackSynthesizer`, which deploys
     with the caller's credentials (**unverified** against APM).
-  - Stacks can't create IAM roles. The Lambda execution role is created once
-    outside MDLM (section 6, O1) and imported with
-    `Role.fromRoleArn(..., { mutable: false })`.
-- **Short-lived:** for each deploy or teardown, the kernel resolves the profile on
-  the host into session credentials
-  (`aws configure export-credentials --profile apm-<project>`, which lasts an
-  hour or less). It writes them to a mode-0600 env file that the deployer
-  container reads through `--env-file`, and deletes the file when the container
-  is removed. The receipt records only the APM project, the caller identity ARN
-  and the credential expiry time.
-- **No secrets in records, evidence or review packets:** the kernel redacts every
-  stream before anything is written. Stdout, stderr, artifacts, stack outputs and
-  the proxy log are scanned before the receipt is written:
-  - **Exact values:** the kernel knows the access key ID, secret key and session
-    token it injected and replaces every occurrence with `[REDACTED:aws-session]`.
-  - **Patterns:** AWS key prefixes (`AKIA`/`ASIA` + 16 characters),
-    `aws_secret_access_key`, `Authorization:` headers, and PEM private-key blocks.
-    A match **refuses** the receipt instead of rewriting it. The outcome is
-    `error`, with the stream and byte offset of the match but not the match
-    itself. A pattern match means a secret the kernel didn't inject leaked. The
-    author fixes the leak; MDLM doesn't hide it.
+  - Stacks can't create IAM roles, and APM only lets a caller pass the project's
+    own role. The Lambda functions therefore need a pre-existing execution role
+    that APM allows the project to pass, with a Lambda trust policy and
+    permissions scoped to the demo's tables and log groups. Whether APM can
+    register such a runtime role, or the project's own role has to serve, is an
+    open question for O1, and it **blocks D1**. The CDK app imports the role
+    with `Role.fromRoleArn(..., { mutable: false })`.
+- **Short-lived, and never copied:** credentials stay inside APM's profile
+  mechanism. Only host-side kernel steps use the profile: the CDK CLI deploy and
+  destroy, the stack and tag reads, and `sts:GetCallerIdentity`. The kernel runs
+  them with `AWS_PROFILE=apm-<project>`, and the profile refreshes its own
+  short-lived session. The kernel never exports, prints or copies credentials,
+  and no container ever receives them. The synth container and verifiers run
+  without credentials. The receipt records only the APM project and the caller
+  identity ARN.
+- **No secrets in records, evidence or review packets:** before a receipt is
+  written, the kernel scans everything it would store: container stdout, stderr
+  and artifacts, the host CDK CLI output, stack outputs and the proxy log. It
+  looks for AWS key patterns (`AKIA`/`ASIA` + 16 characters),
+  `aws_secret_access_key`, `aws_session_token`, `Authorization:` headers and PEM
+  private-key blocks. A match **refuses** the receipt instead of rewriting it.
+  The outcome is `error`, with the stream and byte offset of the match but not
+  the match itself, and nothing from that stream is written. Because the kernel
+  never holds credential values, a match means a secret leaked from somewhere
+  else. The author fixes the leak; MDLM doesn't hide it.
 
   Review packets are built from receipts (`src/external-review.ts`), so they
-  inherit this protection with no separate scrubbing. Redaction applies to every
+  inherit this protection with no separate scrubbing. The scan applies to every
   receipt, including today's `--network none` runs, which currently store output
   verbatim.
 
@@ -148,9 +165,9 @@ credentials.
 - **CDK by default:** the product repository contains a CDK app (TypeScript) as
   ordinary product source. It is reviewed like code and pinned to the product
   commit. CDK and its dependencies exceed the 16 MiB source archive limit, so the
-  pinned deployer image carries `aws-cdk-lib`, the CDK CLI and esbuild. The
-  product commit carries only the app. `aws-cdk-deployment@1` names the image
-  digest. Other tools (Terraform, SAM) would need their own capability and are
+  pinned synth image carries `aws-cdk-lib`, the CDK CLI and esbuild. The product
+  commit carries only the app. `aws-cdk-deployment@1` names the image digest and
+  the host CDK CLI version. Other tools (Terraform, SAM) would need their own capability and are
   out of scope.
 - **Fixed stack slots, not free names:** the package declares a small pool of
   stack names: one for-credit slot and two dry-run slots for the demo, for
@@ -163,12 +180,17 @@ credentials.
   `aws-cdk-deployment@1` checks the synthesized template before calling AWS and
   refuses it unless:
   - every resource type is on the package allowlist (V1: Lambda, API Gateway v2
-    HTTP API, DynamoDB on-demand, CloudWatch log groups, S3);
+    HTTP API, DynamoDB on-demand, CloudWatch log groups);
+  - the template has no custom resources (`Custom::*`,
+    `AWS::CloudFormation::CustomResource`). CDK backs these with provider
+    functions and IAM roles the stack can't create. This rules out S3
+    `autoDeleteObjects`, so V1 keeps S3 buckets out of product stacks. CDK file
+    assets go to the bootstrap bucket outside the stack, which has a 7-day
+    expiry rule (O1);
   - every Lambda function sets reserved concurrency of 10 or less;
   - the HTTP API sets stage throttling;
   - every log group has 1-day retention;
-  - every stateful resource uses `RemovalPolicy.DESTROY`, and S3 buckets set
-    `autoDeleteObjects`;
+  - every stateful resource uses `RemovalPolicy.DESTROY`;
   - every resource carries the required tags (below).
 
   Anything that bills while idle is off the allowlist: NAT gateways, EC2, RDS,
@@ -181,13 +203,26 @@ credentials.
   End that blocks new deployments. Lambda's implicit log groups sit outside the
   stack, so the template policy requires explicit log groups that the stack owns.
 - **Orphan detection:** every resource is tagged with `mdlm:repository`,
-  `mdlm:deployment` (DPL ID), `mdlm:mode` (`dry-run` or `credit`) and
-  `mdlm:expires-at`. `mdlm deployment orphans --aws-profile …` lists every stack
-  in the slot pool, and every resource tagged `mdlm:repository` (via
-  `tag:GetResources`), that has no live DPL in the repository or whose expiry has
-  passed. It runs automatically before each deployment and as part of each
-  teardown, and it only reports. Deleting an orphan is the explicit
-  `mdlm deployment teardown --orphan <stack>`, run by the operator.
+  `mdlm:deployment`, `mdlm:mode` (`dry-run` or `credit`) and `mdlm:expires-at`.
+  `mdlm:deployment` holds the DPL ID for a for-credit deployment or the dry-run
+  deployment ID (section 5). `mdlm deployment orphans --aws-profile …` lists
+  every stack in the slot pool and every resource tagged `mdlm:repository` (via
+  `tag:GetResources`) that is an orphan. A resource is an orphan when its
+  `mdlm:deployment` names neither a DPL nor a dry-run deployment record in the
+  repository, when that deployment already has a teardown, or when
+  `mdlm:expires-at` has passed. It runs automatically before each deployment and
+  as part of each teardown, and it only reports. Cleanup is explicit and run by
+  the operator:
+  - `mdlm deployment teardown --orphan-stack <slot>` deletes a stack in the
+    slot pool.
+  - Resources left without a stack (a `DELETE_FAILED` stack, or a resource that
+    outlived its stack) are deleted one at a time with
+    `mdlm deployment teardown --orphan-resource <arn>`. V1 deletes only the
+    allowlisted resource types and asks for confirmation before each deletion.
+    Any other resource type is reported for Taylor to remove by hand.
+  - A teardown succeeds only when the stack is `DELETE_COMPLETE` and the tag
+    query for its deployment ID comes back empty. Otherwise it fails and names
+    the remaining ARNs.
 
 ## 5. Dry runs and for-credit runs
 
@@ -197,12 +232,15 @@ single frozen version.
 
 - **Dry run:** `mdlm deployment dry-run <commit> --slot <dry-n>` deploys any exact
   commit to a dry-run slot, tagged `mdlm:mode=dry-run`, with a short lifetime (V1:
-  2 hours). It publishes no lifecycle data and creates no DPL. Its receipt stays
-  under `.lifecycle/work/` with the #1111 dry-run cache. `mdlm execution dry-run`
+  2 hours). It publishes no lifecycle data and creates no DPL. Instead it writes
+  a durable dry-run deployment record under `.lifecycle/work/deployments/`,
+  alongside the #1111 dry-run cache. The record holds the same receipt fields
+  and a dry-run deployment ID, which goes in the `mdlm:deployment` tag. Teardown
+  and orphan checks use that record the same way they use a DPL. `mdlm execution dry-run`
   can target that ephemeral deployment. Its cache key adds the template and asset
   digests, so a product change that leaves the deployed artifact unchanged keeps
   its cache hits. Dry-run deployments and their results are never evidence and
-  can't be linked from a DPL or RES. The same orphan and teardown rules apply.
+  can't be linked from a DPL or RES. The same teardown and orphan rules apply.
 - **For credit:** the frozen product commit is deployed **once**, as a published
   DPL in the credit slot. Every for-credit verification activity in the pass
   links to that one DPL. The package rejects a for-credit pass whose results
@@ -220,17 +258,18 @@ about a day or less, M a few days, L about a week or more).
 
 | # | Where | Candidate issue | Size | Needs |
 | --- | --- | --- | --- | --- |
-| D1 | Kernel | `deployment` action kind, `aws-cdk-deployment@1` capability, `mdlm deployment run`, deployer runtime (AWS-only egress proxy, env-file credentials from an APM profile, longer fixed wait), deployment receipt with output allowlist and version probe. First, confirm `CliCredentialsStackSynthesizer` through APM and that asset digests are deterministic. | L | D3, O1 |
+| D1 | Kernel | `deployment` action kind, `aws-cdk-deployment@1` capability, `mdlm deployment run`: sandboxed `cdk synth`, then a host-side `cdk deploy --app cdk.out` with the APM profile. Deployment receipt with the output allowlist and version probe. First, confirm `CliCredentialsStackSynthesizer` with a pre-synthesized assembly through APM, and that asset digests are deterministic. | L | D3, O1 |
 | D2 | Kernel | Networked verification mode: `verified-against` DPL link, per-run internal network and allowlist proxy, `MDLM_ENDPOINT` and `MDLM_RUN_ID`, pre/post probes, receipt fields, `error` on drift. | M | D1 |
-| D3 | Kernel | Receipt redaction for all runtimes: exact-value replacement of injected secrets and pattern refusal. | M | — |
-| D4 | Kernel | `mdlm deployment teardown` (including `--orphan`) and `mdlm deployment orphans`: required tags, teardown receipt, tag-query check, pre-deploy orphan check. | M | D1 |
-| D5 | Kernel | Pre-deploy template policy check: package-declared resource allowlist, concurrency, throttling, retention, removal-policy and tag rules, slot pool. | M | D1 |
+| D3 | Kernel | Secret-pattern scan with receipt refusal, for all runtimes and the host CDK CLI output. | S | — |
+| D4 | Kernel | `mdlm deployment teardown` (including `--orphan-stack` and `--orphan-resource` for allowlisted types) and `mdlm deployment orphans`: required tags, teardown receipt, tag-query check, pre-deploy orphan check, dry-run deployment records. | M | D1 |
+| D5 | Kernel | Pre-deploy template policy check: package-declared resource allowlist, no custom resources, concurrency, throttling, retention, removal-policy and tag rules, slot pool. | M | D1 |
 | D6 | Kernel | `mdlm deployment dry-run` to dry-run slots, and template/asset digests in the #1111 cache key. | S | D1, #1111 |
 | D7 | Package | DPL and teardown types and actions, `deploys`/`verified-against` links, the teardown-before-terminal Expectation, the expiry Loose End, and the one-DPL-per-for-credit-pass rule. | M | D1, D4, package #46 |
-| D8 | Package | Guidance: CDK app conventions (synthesizer, imported role, explicit log groups, DESTROY, tags, version endpoint), writing endpoint verifiers (run-scoped data, environment `error` versus product `fail`), and the demo's pinned deployer image. | S | D7 |
-| O1 | Taylor, one-time | APM project `mdlm-demo` with grants on the three slot stacks in one region and on the template's services; the Lambda execution role; the CDK asset bucket; an AWS Budgets alert at $10 a month; activating the `mdlm:*` cost-allocation tags. This is outside MDLM and needs Taylor's approval and account access. | S | — |
+| D8 | Package | Guidance: CDK app conventions (synthesizer, imported role, explicit log groups, DESTROY, tags, version endpoint), writing endpoint verifiers (run-scoped data, environment `error` versus product `fail`), and the demo's pinned synth image. | S | D7 |
+| O1 | Taylor, one-time | APM project `mdlm-demo` with grants on the three slot stacks in one region and on the template's services. A Lambda execution role that APM lets the project pass, with a Lambda trust policy and permissions scoped to the demo's table and log groups; whether APM supports this is still open and blocks D1. The CDK bootstrap asset bucket, with a 7-day expiry rule. An AWS Budgets alert at $10 a month. Activating the `mdlm:*` cost-allocation tags. This is outside MDLM and needs Taylor's approval and account access. | S | — |
 
-The critical path is D3 → D1 → D2/D4/D5 → D7, with D6 and D8 alongside. D3 is
+The critical path is O1 (execution role) → D1 → D2/D4/D5 → D7, with D3, D6 and
+D8 alongside. D3 is
 worth shipping first on its own, because today's receipts already store output
 verbatim.
 
@@ -268,16 +307,20 @@ requests in total, or about 220,000 including a modest timing or load check.
 | S3 assets, CloudFormation | small objects; CloudFormation is free for AWS resource types | <$0.01 |
 | **Total** | | **~$0.60 per run** (free tier may cover most of it) |
 
-The proposed budget is a $5 hard ceiling per run, which leaves room for retries
-and redeploys, and the $10 monthly account alert as a backstop. A deploy should
+The proposed budget is $5 per run, an approval budget rather than an enforced
+cap, which leaves room for retries and redeploys. V1 can't enforce a monetary
+ceiling. The template policy limits the cost rate (no resources that bill while
+idle, capped concurrency and throttling) but not total requests, storage or
+retries. The $10 monthly account alert arrives hours after the spend. A deploy should
 take about 1–3 minutes and a teardown about 1–2 minutes (**unverified**). The
 main cost of the demo is agent time, not AWS.
 
 ## Consequences
 
 - The `--network none` runtime stays the default and unchanged. Networking is
-  available only through a linked DPL, and only to that DPL's endpoint.
-  Credentials go only to the deployer container.
+  available only through a linked DPL, and only to that DPL's endpoint. No
+  container receives AWS credentials. Only host-side kernel steps use the APM
+  profile.
 - Deployment adds one new kind of operation with a real external side effect.
   The started-marker, no-replay design already covers it. Recovery is teardown
   plus an orphan check, never a blind retry.
