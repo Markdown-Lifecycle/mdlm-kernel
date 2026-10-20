@@ -86,7 +86,8 @@ process.stdout.write = (_chunk, encoding, callback) => {
   });
 
   it("reports a closed stdout after review registration as a structured failure and keeps the registration", async () => {
-    const repository = await startedRepository();
+    // The child resolves symlinked temp paths; the review context binds the exact path.
+    const repository = await fs.realpath(await startedRepository());
     const registry = path.join(parent!, "registry");
     await fs.mkdir(registry);
     const run = async (...args: string[]) => JSON.parse((await executeCommandApplication([...args, "--json"], repository)).output);
@@ -117,8 +118,8 @@ process.stdout.write = (_chunk, encoding, callback) => {
     expect(status, stderr).toBe(1);
     expect(stderr).not.toContain("Unhandled");
     expect(JSON.parse(stderr)).toMatchObject({ok: false, diagnostics: [{code: "command-output-unwritable", cause: "EPIPE"}]});
-    const [stored] = await fs.readdir(registry);
-    expect(stored).toMatch(/-review\.json$/);
+    const stored = (await fs.readdir(registry)).find((file) => file.endsWith("-review.json"));
+    expect(stored).toBeDefined();
     const registration = await fs.readFile(path.join(registry, stored!), "utf8");
     vi.stubEnv("MDLM_REVIEW_REGISTRY", registry);
     vi.stubEnv("MDLM_REVIEW_REGISTRAR", "1");
