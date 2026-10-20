@@ -4,6 +4,13 @@ import { repositoryGitEnvironment } from "./git-environment.js";
 
 const locallyReleasedLocks = new Set<string>();
 
+/**
+ * Policy: how long one scope waits for a live peer lease before refusing.
+ * This is a kernel policy, not a service-level guarantee; see
+ * docs/contracts/repository-leases.md.
+ */
+export const repositoryLockWaitMilliseconds = 10_000;
+
 interface GitCommandResult {
   code: number | null;
   stdout: string;
@@ -132,7 +139,7 @@ export async function withRepositoryLock<T>(
 ): Promise<T> {
   const token = randomUUID();
   let ownerObjectId = await lockObject(root, token);
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + repositoryLockWaitMilliseconds;
   while (true) {
     if (
       await updateLock(
