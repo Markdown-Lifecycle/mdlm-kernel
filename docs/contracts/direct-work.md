@@ -11,6 +11,7 @@ CLI:
 - `mdlm proposal submit <file|-> [--authority <name>] --json`
 - `mdlm proposal settlement <operation> --json`
 - `mdlm execution run <exact-implementation> <operation> --json`
+- `mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <commit>] --json`
 - `mdlm execution settlement <operation> --json`
 - `mdlm review context <action> <exact-subject> --json`
 - `mdlm review register <proposal-file> <verdict-file> --json`
@@ -174,6 +175,30 @@ artifacts in the preserved response or with `git cat-file blob <receipt-oid>` in
 the lifecycle repository. Export never reruns execution or changes lifecycle
 data. Missing parent directories are created. The destination must be new;
 existing evidence is preserved.
+
+`mdlm execution dry-run <exact-IMP-or-TRY> [--activity <exact-VFY>]... [--all] [--source <commit>] --json`
+is a non-credit readiness check for independent verification. It derives the
+same bindings as `execution run` and executes each selected activity, or every
+activity the product selects, in the same native runtime. It writes no lifecycle
+data, receipts or refs and takes no repository lock. Results are cached under the
+lifecycle repository's `.git/mdlm-dry-run/`, one entry per product and activity
+lineage. An activity reruns when any cache component differs from its last
+completed run: activity text (payload other than verifier location, commit and
+image, plus body and links), verifier source tree, runtime (image and kernel
+version), or product inputs. Product inputs are the declared `formal_files` of a
+partial-acceptance product, otherwise the whole committed product tree.
+`--all` reruns every selected activity. `--source` runs a committed candidate
+product commit in the product's repository instead of the published one. Runs
+whose container never started are not cached.
+
+The `mdlm-execution-dry-run@1` response has `credit: false`, `ready` (every
+selected activity passed), a `summary` count, and per activity its `outcome`,
+`failingCases`, `cache` (`hit` or `miss`) and `invalidatedBy` (`no-cached-result`,
+`forced`, `activity-text-changed`, `verifier-changed`, `runtime-changed`,
+`product-inputs-changed` or `inputs-unavailable`). Without `--json` it prints a
+short summary. The receipt reader used by every credit path rejects a stored
+dry-run result, so it cannot become execution evidence even when registered
+under an execution ref.
 
 ## Native verification runtime
 

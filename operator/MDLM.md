@@ -94,6 +94,8 @@ with the lifecycle author; the projection does not replace the intent export.
 
 Follow that package's plan and review guidance. Keep verifier authoring separate from implementation source and explanations. Select exact activities on the product, then execute each with `mdlm execution run <exact-product> <operation-id> --activity <exact-VFY> --json`. Read case results and evidence before publishing the assessment. Shared scripts are supported; complete requirement coverage still needs an explicit adequacy judgment.
 
+Before a for-credit pass, check readiness with `mdlm execution dry-run <exact-product> [--activity <exact-VFY>]... [--source <product-commit>] --json`. It runs the selected activities, or all of them, in the same native runtime and reruns only those whose activity text, verifier bytes, runtime image or product inputs changed; `--all` reruns everything. `--source` tries a committed candidate product before you publish it. Read `ready`, each activity's `outcome`, `failingCases`, `cache` and `invalidatedBy` from the JSON rather than a prose summary. A dry run publishes nothing, takes no lock and is never evidence. When it is ready, run every activity once with `mdlm execution run` on the frozen product.
+
 For a package using product-owned verification, commit the product source and verification script, then run:
 
 ```bash
