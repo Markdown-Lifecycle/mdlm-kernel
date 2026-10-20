@@ -41,7 +41,7 @@ export async function runMdlmCli(options: MdlmCliOptions): Promise<number> {
     await writeCommandOutput(
       options.stderr,
       `${JSON.stringify(measured.diagnostics)}\n`,
-    );
+    ).catch(() => undefined);
   }
   return measured.value.exitCode;
 }

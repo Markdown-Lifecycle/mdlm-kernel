@@ -11,8 +11,9 @@ if (readsProposal) {
   standardInput = "";
   for await (const chunk of process.stdin) standardInput += chunk;
 }
-// A closed stdout also emits EPIPE as a stream event; runMdlmCli reports it from the write callback.
+// A closed stream also emits EPIPE as a stream event; runMdlmCli handles it from the write callback.
 process.stdout.on("error", () => undefined);
+process.stderr.on("error", () => undefined);
 process.exitCode = await runMdlmCli({
   arguments_,
   cwd: process.cwd(),

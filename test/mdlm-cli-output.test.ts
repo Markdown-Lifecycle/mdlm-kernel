@@ -129,6 +129,20 @@ process.stdout.write = (_chunk, encoding, callback) => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it("exits nonzero without an uncaught exception when stdout and stderr are both closed", async () => {
+    const repository = await startedRepository();
+    const uncaught = path.join(parent!, "uncaught.txt");
+    const probe = path.join(parent!, "uncaught-monitor.mjs");
+    await fs.writeFile(probe, `import { appendFileSync } from "node:fs";\nprocess.on("uncaughtExceptionMonitor", (error) => appendFileSync(${JSON.stringify(uncaught)}, String(error)));\n`);
+    const child = spawn(process.execPath, ["--import", pathToFileURL(probe).href, executable, "expectations", "--json"], {
+      cwd: repository, env: {...process.env, MDLM_PERFORMANCE: "json"}, stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.destroy();
+    child.stderr.destroy();
+    expect(await new Promise<number | null>((resolve) => child.on("close", resolve))).toBe(1);
+    await expect(fs.readFile(uncaught, "utf8")).rejects.toMatchObject({code: "ENOENT"});
+  });
+
   it("runs through an installed-style bin symlink", async () => {
     parent = await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-cli-symlink-"));
     const launcher = path.join(parent, "mdlm");
