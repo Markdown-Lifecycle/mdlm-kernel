@@ -71,6 +71,19 @@ test.each(Object.keys(packets))("%s packet streams the exact bytes main produced
   } finally { await fs.rm(path.dirname(file), {recursive: true, force: true}); }
 });
 
+test("a failed export removes only the file it created", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-export-failure-"));
+  const file = path.join(directory, "export.json"), existing = path.join(directory, "existing.json");
+  try {
+    const failing = {content: "x".repeat(4 * MiB), later: {toJSON() { throw new Error("serialization failed"); }}};
+    await expect(writeJsonFile(file, failing, 2)).rejects.toThrow("serialization failed");
+    await expect(fs.stat(file)).rejects.toMatchObject({code: "ENOENT"});
+    await fs.writeFile(existing, "keep");
+    await expect(writeJsonFile(existing, {}, 2)).rejects.toMatchObject({code: "EEXIST"});
+    expect(await fs.readFile(existing, "utf8")).toBe("keep");
+  } finally { await fs.rm(directory, {recursive: true, force: true}); }
+});
+
 setFlagsFromString("--expose-gc");
 const gc = runInNewContext("gc") as () => void;
 // Node keeps large decoded strings outside the V8 heap, so count external memory too.

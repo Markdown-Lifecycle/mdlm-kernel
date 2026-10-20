@@ -105,9 +105,10 @@ export const canonicalDigest = (value: unknown): string => digest(canonicalChunk
 /** Write `${JSON.stringify(value, null, indent)}\n` to a new file without building it as one string. */
 export async function writeJsonFile(file: string, value: unknown, indent: number): Promise<{bytes: number; sha256: string}> {
   const stream = createWriteStream(file, {flags: "wx"}), hash = createHash("sha256");
-  let bytes = 0;
+  let bytes = 0, opened = false;
   try {
     await once(stream, "open");
+    opened = true;
     const write = async (chunk: string) => {
       const buffer = Buffer.from(chunk, "utf8");
       hash.update(buffer);
@@ -121,9 +122,9 @@ export async function writeJsonFile(file: string, value: unknown, indent: number
     await once(stream, "finish");
     return {bytes, sha256: hash.digest("hex")};
   } catch (error) {
-    stream.destroy();
-    // Only a stream that opened created this file; never remove an existing one.
-    if (stream.pending === false) await fs.rm(file, {force: true});
+    if (!stream.closed) { stream.destroy(); await once(stream, "close"); }
+    // Only an open with "wx" created this file; never remove an existing one.
+    if (opened) await fs.rm(file, {force: true});
     throw error;
   }
 }
