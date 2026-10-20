@@ -47,6 +47,8 @@ test("a fresh pass or fail receipt must agree with its own cases, report, start 
   await expect(requireCoherentVerificationResult(binding, pass)).resolves.toBeUndefined();
   await expect(requireCoherentVerificationResult(binding, {...pass, outcome: "fail", exitCode: 1, caseResults: [failed], rawReportBase64: report([failed])})).resolves.toBeUndefined();
   await expect(requireCoherentVerificationResult(binding, {...pass, outcome: "error", started: false, caseResults: []})).resolves.toBeUndefined();
+  const pinned = "sha256:latest@sha256:" + "c".repeat(64);
+  await expect(requireCoherentVerificationResult({...binding, image: pinned}, {...pass, image: pinned})).resolves.toBeUndefined();
   for (const [field, altered] of [
     ["case results", {caseResults: []}],
     ["case results", {caseResults: [failed]}],

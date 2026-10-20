@@ -87,7 +87,7 @@ export async function requireCoherentVerificationResult(binding: VerificationBin
   // Null source identities would skip source authentication in validateVerificationReceipt.
   if (result.sourceTree === null || result.scriptSha256 === null) refuse("source identity");
   if (result.image !== binding.image || !/^sha256:[a-f0-9]{64}$/.test(String(result.imageId))
-    || (/^sha256:/.test(binding.image) && result.imageId !== binding.image)) refuse("imageId");
+    || (/^sha256:[a-f0-9]{64}$/.test(binding.image) && result.imageId !== binding.image)) refuse("imageId");
   const independent = binding.independentVerification;
   if (!independent) {
     if (result.outcome !== (result.exitCode === 0 ? "pass" : result.exitCode === 1 ? "fail" : "error")) refuse("exit code");
