@@ -4,6 +4,7 @@ import {
   writeCommandOutput,
 } from "./command-output.js";
 import { collectPerformanceDiagnostics } from "./performance-diagnostics.js";
+import { withProgress } from "./progress.js";
 
 export interface MdlmCliOptions {
   arguments_: string[];
@@ -16,10 +17,12 @@ export interface MdlmCliOptions {
 
 export async function runMdlmCli(options: MdlmCliOptions): Promise<number> {
   const measured = await collectPerformanceDiagnostics(() =>
-    executeCommandApplication(
-      options.arguments_,
-      options.cwd,
-      options.standardInput,
+    withProgress((line) => { options.stderr.write(line, () => {}); }, () =>
+      executeCommandApplication(
+        options.arguments_,
+        options.cwd,
+        options.standardInput,
+      )
     )
   );
   await writeCommandOutput(options.stdout, measured.value.output);
