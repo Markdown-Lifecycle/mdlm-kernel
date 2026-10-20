@@ -1,11 +1,11 @@
 import path from "node:path";
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { DatumEnvelope, ProcessPackage } from "./index.js";
 import type { ProcessSelection } from "./repository-contract.js";
 import { authenticatedAuthoringPackage } from "./lifecycle-repository.js";
 import { boundLinks, effectiveInterfaces, requirementTraceBinding, selectedRequirementGraph } from "./requirement-trace.js";
 import type { VerificationBinding } from "./verification-receipt.js";
+import { jsonDigest } from "./json-stream.js";
 
 type State = {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; authoringSelections?: readonly ProcessSelection[]};
 export interface VerificationCase {id: string; targets: string[]; preconditions: string[]; actions: string[]; expected_results: string[]; coverage_rationale: string}
@@ -31,7 +31,7 @@ export function verificationAuthoringContext(state: State, subjectId: string) {
   const interfaces = [...interfaceIds].sort().map(id => exact(state.data, id));
   const record = (d: DatumEnvelope) => ({revision_id: d.revision_id, type: d.type, payload: d.payload, body: d.body, links: d.links.filter(l => ["uses-interface", "parent", "child"].includes(l.type))});
   const context = {contract: "mdlm-verification-authoring@1", package: state.package, subject: subjectId, requirements: requirements.map(d => record(bound(d))), decomposition: groups.map(record), interfaces: interfaces.map(record), instructions: "Author intended actions and expected results from this intent only. Use public interfaces, not implementation source or existing product tests. Explain coverage of every obligation. Method and tool must fit the claim; a passing case is evidence within its stated limits."};
-  return {...context, authoringContext: `sha256:${createHash("sha256").update(JSON.stringify(context)).digest("hex")}`};
+  return {...context, authoringContext: `sha256:${jsonDigest(context)}`};
 }
 export function validateVerificationActivity(state: State, activity: DatumEnvelope) {
   const b = binding(state);

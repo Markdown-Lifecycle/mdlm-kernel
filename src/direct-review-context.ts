@@ -174,6 +174,8 @@ export async function buildDirectReviewContext(context: DirectContext): Promise<
   const independent = independentBinding(pkg);
   if (independent) {
     result.verifierSources = [];
+    // A blob ID names exact bytes, so a file shared across verifier commits is read and held once.
+    const blobs = new Map<string, {content: string; encoding?: "base64"}>();
     const activities = data.filter(d => d.type === independent.type && (selectedIds.has(d.revision_id) || selected.some(s => s.links.some(l => l.type === "verification" && l.target === d.revision_id))));
     for (const activity of activities) {
       const cwd = String(activity.payload.repository_path), commit = String(activity.payload.source_commit);
@@ -183,10 +185,14 @@ export async function buildDirectReviewContext(context: DirectContext): Promise<
       for (const line of listing.stdout.split("\0").filter(Boolean)) {
         const match = /^(100644|100755) blob ([a-f0-9]{40})\t([\s\S]+)$/.exec(line);
         if (!match) throw new Error("Verifier review supports regular committed files only");
-        const bytes = await exec("git", ["cat-file", "blob", match[2]!], {cwd, encoding:"buffer", maxBuffer:64*1024*1024});
-        const source = isUtf8(bytes.stdout) && !bytes.stdout.includes(0)
-          ? {content: bytes.stdout.toString("utf8")}
-          : {content: bytes.stdout.toString("base64"), encoding: "base64" as const};
+        let source = blobs.get(match[2]!);
+        if (!source) {
+          const bytes = await exec("git", ["cat-file", "blob", match[2]!], {cwd, encoding:"buffer", maxBuffer:64*1024*1024});
+          source = isUtf8(bytes.stdout) && !bytes.stdout.includes(0)
+            ? {content: bytes.stdout.toString("utf8")}
+            : {content: bytes.stdout.toString("base64"), encoding: "base64" as const};
+          blobs.set(match[2]!, source);
+        }
         files.push({path:match[3]!,blob:match[2]!,...source});
       }
       result.verifierSources.push({activity:activity.revision_id,sourceCommit:commit,files});

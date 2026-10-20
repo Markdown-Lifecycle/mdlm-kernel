@@ -377,7 +377,7 @@ test("saved review context provides exact handoff metadata without replacing exp
 test("shared verifier tree archive expands complete review evidence without source repositories", async () => {
   const {executeCommandApplication} = await import("../src/command-application.js");
   const selection = await import("../src/direct-proposal.js");
-  const {canonicalReviewPacket} = await import("../src/external-review.js");
+  const {reviewPacketDigest} = await import("../src/external-review.js");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-shared-review-"));
   const offline = path.join(root, "offline");
   const screenshot = Buffer.from([0, 137, 80, 78, 71, 255]);
@@ -429,7 +429,7 @@ test("shared verifier tree archive expands complete review evidence without sour
     const recoveredBytes = await fs.readFile(recoveredFile), full = JSON.parse(recoveredBytes.toString());
     assertPin(recovered, recoveredBytes, recoveredFile);
     expect(full).toEqual(ordinary);
-    expect(canonicalReviewPacket(full)).toBe(canonicalReviewPacket(ordinary));
+    expect(reviewPacketDigest(full)).toBe(reviewPacketDigest(ordinary));
     expect(Buffer.from(full.verifierSources[1].files[2].content, "base64")).toEqual(screenshot);
     await cli(["review", "expand-context", "archive.json", "--output", recoveredFile], offline, 1);
     expect(await fs.readFile(recoveredFile)).toEqual(recoveredBytes);
