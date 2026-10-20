@@ -30,7 +30,7 @@ capability `aws-cdk-deployment@1`. `mdlm deployment run <DPL> <operation>` has
 two steps:
 
 1. **Synthesize in the sandbox.** The product's committed CDK app runs as
-   `cdk synth` in a pinned synth image under today's runtime (with the 300-second wait), with
+   `cdk synth` in a pinned synth image under today's sandbox rules (with a fixed 300-second wait),
    `--network none` and no credentials, and writes the cloud assembly
    (`cdk.out`) to `/evidence`. All product code, including Lambda bundling with
    esbuild, runs here.
