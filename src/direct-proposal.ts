@@ -12,7 +12,7 @@ import { resolvePrompt } from "./direct-prompt.js";
 import { evaluateExpressionValue } from "./evaluator.js";
 import { compileExpressionValue } from "./expression.js";
 import { finalizeDirectDomain } from "./direct-domain.js";
-import { validateDirectAuthority, buildDirectReviewContext, registerDirectReview } from "./direct-authority.js";
+import { validateDirectAuthority, buildDirectReviewContext, registerDirectReview, type DirectAuthorityEvidence } from "./direct-authority.js";
 import { readVerificationReceiptBlob, validateVerificationReceipt, type VerificationBinding, runVerificationReceipt, verificationRef } from "./verification-receipt.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
 import { requirementTraceBinding } from "./requirement-trace.js";
@@ -215,6 +215,8 @@ async function settlement(root:string,operation:string) {
   try {tx=JSON.parse(await fs.readFile(path.join(root,".lifecycle/data/.transactions",id,"execution.json"),"utf8"));} catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return undefined;throw error;}
   const current=await directState(root);
   if(tx.contract!=="mdlm-direct-transaction@1"||tx.operation!==operation||tx.id!==id||!tx.outputs.every(d=>current.data.some(existing=>isDeepStrictEqual(existing,d)))) fail("Settlement does not authenticate the published transaction");
+  // A registered review retains the hash of the exact proposal bytes it authorized; the stored digest must still name them.
+  const review=(tx.authority as DirectAuthorityEvidence|undefined)?.review;if(review&&(review.operation!==operation||tx.proposalDigest!==`sha256:${review.proposalSha256}`)) fail("Settlement proposal digest contradicts its registered review proof");
   return {tx,result:{ok:true,contract:"mdlm-proposal-result@2",operation,outcome:"accepted",transaction:id,revisions:tx.outputs.map(d=>d.revision_id),proposalDigest:tx.proposalDigest} as DirectProposalResult};
 }
 export async function inspectDirectSettlement(root:string,operation:string){return (await settlement(root,operation))?.result??{ok:true,contract:"mdlm-proposal-result@2",operation,outcome:"not-published"};}
