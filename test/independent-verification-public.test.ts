@@ -303,6 +303,12 @@ test("independent verification reports complete requirements, failures, stale ev
     for(const row of beforeExecution.requirements) expect(row).toMatchObject({coverage:"adequate",execution:"not-run",collectiveCoverage:"awaiting-coverage-review",overall:"not-run",nextAction:"Execute the selected activity against this exact product"});
     const first=await execute("pass",productId);
     expect(first.value.receipt.result.caseResults).toHaveLength(2);
+    // A registered copy of a real receipt with an altered start state cannot publish its claimed pass.
+    const tamperedFile=path.join(root,"tampered-receipt.json");await fs.writeFile(tamperedFile,JSON.stringify({...first.value.receipt,binding:{...first.value.receipt.binding,operation:"tampered"},result:{...first.value.receipt.result,started:false}}));
+    const tampered=git(repository,"hash-object","-w",tamperedFile),tamperedRefs=["attempt-1-receipt","latest"].map(suffix=>`refs/mdlm/execution/tampered/${suffix}`);for(const ref of tamperedRefs)git(repository,"update-ref",ref,tampered);
+    const tamperedGuidance=guidance("execute-verification",productId),tamperedCandidate=tamperedGuidance.candidates[0];tamperedCandidate.payload={...tamperedCandidate.payload,title:"Tampered evidence",assessment:"Altered start state",correction_target:"none"};tamperedCandidate.links.push({type:"evaluates",target:activity});
+    expect(JSON.stringify(await submit(tamperedGuidance,"tampered-result",[tamperedCandidate],{receipt:`git-blob:${tampered}`},false,1))).toContain("start state contradicts its pass outcome");
+    for(const ref of tamperedRefs)git(repository,"update-ref","-d",ref);
     expect(cli(["verification","status",productId]).requirements[0]).toMatchObject({overall:"awaiting-coverage-review",nextAction:"Review collective requirement coverage with the implementation"});
     const settled=cli(["execution","run",productId,"pass","--activity",activity]);expect(settled.value.evidence).toBe(first.value.evidence);
     const rerun=await execute("pass-fresh",productId);

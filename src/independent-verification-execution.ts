@@ -63,12 +63,33 @@ async function evidenceFile(root: string, relative: string, remaining: number): 
   return bytes;
 }
 
+type EvidenceReader = (relative: string, remaining: number) => Promise<Buffer>;
+
 /** Validate the declared case set, retaining observed rows and raw bytes on failure. */
-export async function captureVerificationReport(root: string, definition: IndependentVerification): Promise<CapturedVerificationReport> {
+export function captureVerificationReport(root: string, definition: IndependentVerification): Promise<CapturedVerificationReport> {
+  const read: EvidenceReader = (relative, remaining) => evidenceFile(root, relative, remaining);
+  return readVerificationReport(definition, () => read(definition.resultsPath, VERIFICATION_EVIDENCE_LIMIT), read);
+}
+
+/** Rebuild the captured report from a receipt's saved report and evidence bytes alone. */
+export function recaptureVerificationReport(definition: IndependentVerification, saved: {rawReportBase64?: string; artifacts?: VerificationArtifact[]}): Promise<CapturedVerificationReport> {
+  const decode = (relative: string, encoded: unknown, remaining: number) => {
+    if (typeof encoded !== "string") throw new Error(`Evidence '${relative}' is not saved in the receipt.`);
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.toString("base64") !== encoded) throw new Error(`Evidence '${relative}' is not canonical base64.`);
+    if (bytes.length > remaining) throw new Error("Verification evidence exceeded 8 MiB; capture is incomplete.");
+    return bytes;
+  };
+  return readVerificationReport(definition,
+    async () => decode(definition.resultsPath, saved.rawReportBase64, VERIFICATION_EVIDENCE_LIMIT),
+    async (relative, remaining) => decode(relative, saved.artifacts?.find(artifact => artifact.path === relative)?.contentBase64, remaining));
+}
+
+async function readVerificationReport(definition: IndependentVerification, readReport: () => Promise<Buffer>, read: EvidenceReader): Promise<CapturedVerificationReport> {
   const captured: CapturedVerificationReport = {caseResults: [], artifacts: []};
   const errors: string[] = [];
   try {
-    const bytes = await evidenceFile(root, definition.resultsPath, VERIFICATION_EVIDENCE_LIMIT);
+    const bytes = await readReport();
     captured.rawReportBase64 = bytes.toString("base64");
     const parsed: unknown = JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Verification report must be an object.");
@@ -96,7 +117,7 @@ export async function captureVerificationReport(root: string, definition: Indepe
     let remaining = VERIFICATION_EVIDENCE_LIMIT - bytes.length;
     for (const file of new Set(captured.caseResults.flatMap(row => row.evidence_refs))) {
       try {
-        const content = await evidenceFile(root, file, remaining);
+        const content = await read(file, remaining);
         remaining -= content.length;
         captured.artifacts.push({path: file, sha256: createHash("sha256").update(content).digest("hex"), bytes: content.length, contentBase64: content.toString("base64")});
       } catch (error) { errors.push(`Evidence '${file}' unavailable: ${error instanceof Error ? error.message : String(error)}`); }
