@@ -68,6 +68,14 @@ test("dry run reruns only activities whose inputs changed and its results are ne
     await writeFile(path.join(product, ".gitattributes"), "app.py export-ignore\n");
     expect(await run({...latest, sourceCommit: commit(product)})).toMatchObject({cache: "miss", invalidatedBy: ["product-inputs-changed"]});
 
+    // A substituting verifier reruns on a new commit even when its tree is unchanged.
+    await writeFile(path.join(verifier, ".gitattributes"), "helper.txt export-subst\n");
+    await writeFile(path.join(verifier, "helper.txt"), "$Format:%H$\n");
+    const substituting = {...latest, sourceCommit: git(product, "rev-parse", "HEAD"), independentVerification: {...latest.independentVerification!, sourceCommit: commit(verifier)}};
+    expect(await run(substituting)).toMatchObject({cache: "miss", invalidatedBy: ["verifier-changed"]});
+    git(verifier, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--allow-empty", "--no-verify", "-qm", "same tree");
+    expect(await run({...substituting, independentVerification: {...substituting.independentVerification, sourceCommit: git(verifier, "rev-parse", "HEAD")}})).toMatchObject({cache: "miss", invalidatedBy: ["verifier-changed"]});
+
     // Credit paths read receipts through one reader. A stored dry-run result is rejected even when registered like a receipt.
     const [file] = await readdir(cache);
     git(product, "update-ref", "refs/mdlm/execution/forged/attempt-1-receipt", git(product, "hash-object", "-w", path.join(cache, file!)));

@@ -36,6 +36,17 @@ async function kernelVersion() {
   return (JSON.parse(await fs.readFile(new URL("../package.json", import.meta.url), "utf8")) as {version: string}).version;
 }
 
+const entryPath = (entry: string) => entry.slice(entry.indexOf("\t") + 1);
+/** Committed entries as git archive exports them. Committed .gitattributes can drop
+ * files (export-ignore) or write commit metadata (export-subst), so a substituting
+ * source is keyed on its commit as well as its tree. */
+async function archiveIdentity(repository: string, commit: string) {
+  const entries = (await git(repository, ["ls-tree", "-rz", "--full-tree", commit])).split("\0").filter(Boolean);
+  const attributes = entries.filter(entry => path.posix.basename(entryPath(entry)) === ".gitattributes").sort();
+  const substituted = (await Promise.all(attributes.map(entry => git(repository, ["cat-file", "blob", entry.split(/\s/)[2]!])))).some(source => source.includes("export-subst"));
+  return {entries, attributes, commit: substituted ? commit : undefined};
+}
+
 /** Everything the native runtime can observe for one activity, keyed by content rather than commit identity. */
 export async function dryRunComponents(activity: DatumEnvelope, binding: VerificationBinding, kernel: string): Promise<DryRunComponents> {
   const verifier = binding.independentVerification;
@@ -43,22 +54,18 @@ export async function dryRunComponents(activity: DatumEnvelope, binding: Verific
   // Verifier location, commit and image have their own components below.
   const {source_commit: _commit, repository_path: _path, verification_image: _image, ...text} = activity.payload;
   const product = await authenticateProductSource(binding);
-  const entries = (await git(binding.repositoryPath, ["ls-tree", "-rz", "--full-tree", product.sourceCommit])).split("\0").filter(Boolean);
-  const entryPath = (entry: string) => entry.slice(entry.indexOf("\t") + 1);
-  // git archive applies committed .gitattributes: export-ignore drops files and
-  // export-subst writes commit metadata, so substituted products key on the commit.
-  const attributes = entries.filter(entry => path.posix.basename(entryPath(entry)) === ".gitattributes");
-  const substituted = (await Promise.all(attributes.map(entry => git(binding.repositoryPath, ["cat-file", "blob", entry.split(/\s/)[2]!])))).some(source => source.includes("export-subst"));
-  const commit = substituted ? product.sourceCommit : undefined;
-  let productInputs: DryRunComponents["productInputs"] = {scope: "whole-tree", digest: commit ? sha256({tree: product.sourceTree, commit}) : product.sourceTree};
+  const archived = await archiveIdentity(binding.repositoryPath, product.sourceCommit);
+  let productInputs: DryRunComponents["productInputs"] = {scope: "whole-tree", digest: archived.commit ? sha256({tree: product.sourceTree, commit: archived.commit}) : product.sourceTree};
   if (binding.formalFiles) {
     // The runtime mounts only declared files, so only their committed bytes and modes matter.
     const declared = new Set(binding.formalFiles);
-    productInputs = {scope: "declared-paths", digest: sha256({files: [...declared].sort(), entries: entries.filter(entry => declared.has(entryPath(entry))).sort(), attributes: attributes.sort(), commit})};
+    productInputs = {scope: "declared-paths", digest: sha256({files: [...declared].sort(), entries: archived.entries.filter(entry => declared.has(entryPath(entry))).sort(), attributes: archived.attributes, commit: archived.commit})};
   }
+  const verifierTree = (await authenticateVerificationSource(verifier)).sourceTree;
+  const verifierCommit = (await archiveIdentity(verifier.repositoryPath, verifier.sourceCommit)).commit;
   return {
     activityText: sha256({type: activity.type, payload: text, body: activity.body, links: activity.links}),
-    verifier: (await authenticateVerificationSource(verifier)).sourceTree,
+    verifier: verifierCommit ? sha256({tree: verifierTree, commit: verifierCommit}) : verifierTree,
     runtime: {image: binding.image, kernel},
     productInputs,
   };

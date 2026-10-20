@@ -186,7 +186,9 @@ lineage. An activity reruns when any cache component differs from its last
 completed run: activity text (payload other than verifier location, commit and
 image, plus body and links), verifier source tree, runtime (image and kernel
 version), or product inputs. Product inputs are the declared `formal_files` of a
-partial-acceptance product, otherwise the whole committed product tree.
+partial-acceptance product, otherwise the whole committed product tree. Committed
+`.gitattributes` entries count as inputs, and a product or verifier whose
+attributes use `export-subst` is also keyed on its commit.
 `--all` reruns every selected activity. `--source` runs a committed candidate
 product commit in the product's repository instead of the published one. Runs
 whose container never started are not cached.
