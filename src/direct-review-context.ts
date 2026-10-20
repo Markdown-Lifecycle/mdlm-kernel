@@ -1,6 +1,4 @@
-import { promises as fs } from "node:fs";
 import { isUtf8 } from "node:buffer";
-import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { resolveType, type DatumEnvelope } from "./index.js";
@@ -15,7 +13,7 @@ import { authorablePayloadSchema, sourceAssessmentTargets } from "./direct-guida
 
 import { independentBinding, independentExecutionBinding, verificationStatus, type VerificationCase } from "./independent-verification.js";
 
-import { validateHistoricalResult, type HistoricalObservation } from "./verification-applicability.js";
+import { datumPublications, validateHistoricalResult, type HistoricalObservation } from "./verification-applicability.js";
 
 const exec = promisify(execFile);
 export interface DirectReviewContext {
@@ -92,6 +90,21 @@ async function reviewSource(implementation: DatumEnvelope): Promise<DirectReview
     return {path: entry.path, role: entry.role!, mode: entry.mode, blob: entry.blob, content, formal: implementation.payload.acceptance_scope !== "partial" || (implementation.payload.formal_files as string[]).includes(entry.path)};
   });
   return {implementation: implementation.revision_id, repositoryPath: String(implementation.payload.repository_path), sourceCommit: String(implementation.payload.source_commit), acceptanceScope: implementation.payload.acceptance_scope === "partial" ? "partial" : "whole-product", files};
+}
+
+async function verifierFiles(cwd: string, commit: string): Promise<NonNullable<DirectReviewContext["verifierSources"]>[number]["files"]> {
+  const listing = await exec("git", ["ls-tree", "-rz", "--full-tree", commit], {cwd, maxBuffer:64*1024*1024});
+  const files = [];
+  for (const line of listing.stdout.split("\0").filter(Boolean)) {
+    const match = /^(100644|100755) blob ([a-f0-9]{40})\t([\s\S]+)$/.exec(line);
+    if (!match) throw new Error("Verifier review supports regular committed files only");
+    const bytes = await exec("git", ["cat-file", "blob", match[2]!], {cwd, encoding:"buffer", maxBuffer:64*1024*1024});
+    const source = isUtf8(bytes.stdout) && !bytes.stdout.includes(0)
+      ? {content: bytes.stdout.toString("utf8")}
+      : {content: bytes.stdout.toString("base64"), encoding: "base64" as const};
+    files.push({path:match[3]!,blob:match[2]!,...source});
+  }
+  return files;
 }
 
 async function acceptedBaseline(data: DatumEnvelope[], trace: RequirementTraceBinding, implementation: DatumEnvelope): Promise<DirectReviewContext["sourceScopes"][number]["acceptedBaseline"]> {
@@ -175,20 +188,14 @@ export async function buildDirectReviewContext(context: DirectContext): Promise<
   if (independent) {
     result.verifierSources = [];
     const activities = data.filter(d => d.type === independent.type && (selectedIds.has(d.revision_id) || selected.some(s => s.links.some(l => l.type === "verification" && l.target === d.revision_id))));
+    // Activities often share one verifier commit; read each exact tree once.
+    const trees = new Map<string, Promise<NonNullable<DirectReviewContext["verifierSources"]>[number]["files"]>>();
     for (const activity of activities) {
       const cwd = String(activity.payload.repository_path), commit = String(activity.payload.source_commit);
       if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("Verifier source needs an exact commit");
-      const listing = await exec("git", ["ls-tree", "-rz", "--full-tree", commit], {cwd, maxBuffer:64*1024*1024});
-      const files = [];
-      for (const line of listing.stdout.split("\0").filter(Boolean)) {
-        const match = /^(100644|100755) blob ([a-f0-9]{40})\t([\s\S]+)$/.exec(line);
-        if (!match) throw new Error("Verifier review supports regular committed files only");
-        const bytes = await exec("git", ["cat-file", "blob", match[2]!], {cwd, encoding:"buffer", maxBuffer:64*1024*1024});
-        const source = isUtf8(bytes.stdout) && !bytes.stdout.includes(0)
-          ? {content: bytes.stdout.toString("utf8")}
-          : {content: bytes.stdout.toString("base64"), encoding: "base64" as const};
-        files.push({path:match[3]!,blob:match[2]!,...source});
-      }
+      const key = `${cwd}\0${commit}`;
+      if (!trees.has(key)) trees.set(key, verifierFiles(cwd, commit));
+      const files = await trees.get(key)!;
       result.verifierSources.push({activity:activity.revision_id,sourceCommit:commit,files});
       // Activity source review selects only its declared intent and interfaces, never product source.
       for (const link of activity.links) if (["verifies","uses-interface"].includes(link.type) && !result.records.some(d=>d.revision_id===link.target)) result.records.push(data.find(d=>d.revision_id===link.target)!);
@@ -246,11 +253,7 @@ export async function buildDirectReviewContext(context: DirectContext): Promise<
     const locator = typeof datum.payload.receipt === "string" && /^git-blob:([a-f0-9]{40})$/.exec(datum.payload.receipt);
     if (!locator) throw new Error(`Result '${datum.revision_id}' has no exact verification receipt`);
     const saved = await readVerificationReceiptBlob(root, locator[1]!);
-    const transactions: DirectTransaction[] = [];
-    for (const id of await fs.readdir(path.join(root, ".lifecycle/data/.transactions"))) {
-      const transaction = JSON.parse(await fs.readFile(path.join(root, ".lifecycle/data/.transactions", id, "execution.json"), "utf8")) as DirectTransaction;
-      if (transaction.contract === "mdlm-direct-transaction@1" && transaction.outputs.some(output => isDeepStrictEqual(output, datum))) transactions.push(transaction);
-    }
+    const transactions = await datumPublications(context, datum);
     if (transactions.length !== 1) throw new Error(`Result '${datum.revision_id}' must have one authenticated direct publication`);
     const transaction = transactions[0]!;
     const implementation = implementations.find(value => datum.links.some(link => link.target === value.revision_id));
