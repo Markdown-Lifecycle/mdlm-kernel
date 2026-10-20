@@ -800,7 +800,7 @@ async function dispatchCommand(
         const dryRunOperands = operands.filter((argument, index) => argument !== "--all" && argument !== "--source" && operands[index - 1] !== "--source");
         const source = optionValues(arguments_, "--source");
         const activities = optionValues(arguments_, "--activity");
-        if (dryRunOperands.length !== 3 || source.length > 1 || (arguments_.includes("--source") && !source.length) || [...source, ...activities].some(value => !value || value.startsWith("--"))) throw new Error("Expected execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>]");
+        if (dryRunOperands.length !== 3 || source.length > 1 || arguments_.filter(argument => argument === "--activity").length !== activities.length || (arguments_.includes("--source") && !source.length) || [...source, ...activities].some(value => !value || value.startsWith("--"))) throw new Error("Expected execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>]");
         return {...await runExecutionDryRun(repositoryRoot, dryRunOperands[2]!, {activities, all: arguments_.includes("--all"), source: source[0]}), command: "execution.dry-run", diagnostics: []};
       }
       if (operands[1] === "run" && operands.length === 4) return {...await runDirectExecution(repositoryRoot, operands[2]!, operands[3]!, optionValue(arguments_, "--activity")), command: "execution.run", diagnostics: []};

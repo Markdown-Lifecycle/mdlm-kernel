@@ -43,12 +43,18 @@ export async function dryRunComponents(activity: DatumEnvelope, binding: Verific
   // Verifier location, commit and image have their own components below.
   const {source_commit: _commit, repository_path: _path, verification_image: _image, ...text} = activity.payload;
   const product = await authenticateProductSource(binding);
-  let productInputs: DryRunComponents["productInputs"] = {scope: "whole-tree", digest: product.sourceTree};
+  const entries = (await git(binding.repositoryPath, ["ls-tree", "-rz", "--full-tree", product.sourceCommit])).split("\0").filter(Boolean);
+  const entryPath = (entry: string) => entry.slice(entry.indexOf("\t") + 1);
+  // git archive applies committed .gitattributes: export-ignore drops files and
+  // export-subst writes commit metadata, so substituted products key on the commit.
+  const attributes = entries.filter(entry => path.posix.basename(entryPath(entry)) === ".gitattributes");
+  const substituted = (await Promise.all(attributes.map(entry => git(binding.repositoryPath, ["cat-file", "blob", entry.split(/\s/)[2]!])))).some(source => source.includes("export-subst"));
+  const commit = substituted ? product.sourceCommit : undefined;
+  let productInputs: DryRunComponents["productInputs"] = {scope: "whole-tree", digest: commit ? sha256({tree: product.sourceTree, commit}) : product.sourceTree};
   if (binding.formalFiles) {
     // The runtime mounts only declared files, so only their committed bytes and modes matter.
-    const entries = (await git(binding.repositoryPath, ["ls-tree", "-rz", "--full-tree", product.sourceCommit])).split("\0").filter(Boolean);
     const declared = new Set(binding.formalFiles);
-    productInputs = {scope: "declared-paths", digest: sha256({files: [...declared].sort(), entries: entries.filter(entry => declared.has(entry.slice(entry.indexOf("\t") + 1))).sort()})};
+    productInputs = {scope: "declared-paths", digest: sha256({files: [...declared].sort(), entries: entries.filter(entry => declared.has(entryPath(entry))).sort(), attributes: attributes.sort(), commit})};
   }
   return {
     activityText: sha256({type: activity.type, payload: text, body: activity.body, links: activity.links}),

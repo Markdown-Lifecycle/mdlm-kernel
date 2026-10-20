@@ -6,6 +6,7 @@ import { expect, test, vi } from "vitest";
 import type { DatumEnvelope } from "../src/index.js";
 import type { DockerVerificationInput, DockerVerificationResult } from "../src/docker-verification.js";
 import { dryRunActivities } from "../src/execution-dry-run.js";
+import { executeCommandApplication } from "../src/command-application.js";
 import { readVerificationReceiptBlob, requireVerificationReceipt, type VerificationBinding } from "../src/verification-receipt.js";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], {encoding: "utf8"}).trim();
@@ -63,6 +64,10 @@ test("dry run reruns only activities whose inputs changed and its results are ne
     expect(await run(latest, true)).toMatchObject({outcome: "error", diagnostic: "docker unavailable"});
     expect(await run(latest)).toMatchObject({outcome: "fail", cache: "hit"});
 
+    // Archive attributes outside the declared paths still change what the runtime mounts.
+    await writeFile(path.join(product, ".gitattributes"), "app.py export-ignore\n");
+    expect(await run({...latest, sourceCommit: commit(product)})).toMatchObject({cache: "miss", invalidatedBy: ["product-inputs-changed"]});
+
     // Credit paths read receipts through one reader. A stored dry-run result is rejected even when registered like a receipt.
     const [file] = await readdir(cache);
     git(product, "update-ref", "refs/mdlm/execution/forged/attempt-1-receipt", git(product, "hash-object", "-w", path.join(cache, file!)));
@@ -72,4 +77,10 @@ test("dry run reruns only activities whose inputs changed and its results are ne
     await expect(readVerificationReceiptBlob(product, oid)).rejects.toThrow("non-credit");
     await expect(requireVerificationReceipt(product, {...latest, operation: "forged"})).rejects.toThrow("non-credit");
   } finally { await rm(root, {recursive: true, force: true}); }
+});
+
+test("dry run rejects an activity option without a value instead of selecting every activity", async () => {
+  const result = await executeCommandApplication(["execution", "dry-run", "IMP-P-r00001", "--activity"], os.tmpdir());
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain("Expected execution dry-run");
 });
