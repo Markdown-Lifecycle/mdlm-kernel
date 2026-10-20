@@ -37,8 +37,14 @@ two steps:
 2. **Deploy from the host.** The kernel runs a pinned CDK CLI on the host as
    `cdk deploy --app <cdk.out>` with the operator's APM profile (section 3).
    Deploying a pre-synthesized assembly uploads its file assets and deploys its
-   template without executing product code (**unverified** with
-   `CliCredentialsStackSynthesizer` through APM; D1 checks it first).
+   template without executing product code, provided the assembly is checked
+   first. An asset manifest can name an `executable` source command, and that
+   command would run on the host with APM access. Before deploying, the kernel
+   therefore validates `cdk.out`. It accepts only file assets that are already
+   materialized inside the assembly directory. It rejects `executable` sources,
+   Docker image assets, symlinks, and paths that resolve outside the assembly.
+   Whether this works with `CliCredentialsStackSynthesizer` through APM is
+   **unverified**; D1 checks it first.
 
 The kernel then fills the DPL's kernel-managed fields from a **deployment receipt**,
 just as it fills RES fields from an Execution Receipt today
@@ -72,8 +78,8 @@ deploy. The receipt records:
   (section 4).
 
 A matching **teardown** action (`mdlm deployment teardown <DPL> <operation>`)
-deletes the stack. Its receipt records the final `DELETE_COMPLETE` stack status
-and an empty tag query (section 4). The DPL stays immutable. Teardown is a
+deletes the stack. Its receipt records the final `DELETE_COMPLETE` stack status,
+an empty tag query and an empty inventory check (section 4). The DPL stays immutable. Teardown is a
 separate record that links to it, so history shows both events.
 
 ## 2. Verification against a deployed environment
@@ -191,7 +197,11 @@ credentials.
   - the HTTP API sets stage throttling;
   - every log group has 1-day retention;
   - every stateful resource uses `RemovalPolicy.DESTROY`;
-  - every resource carries the required tags (below).
+  - the stack and every taggable resource carry the required tags (below).
+    Some resource types can't be tagged, such as `AWS::ApiGatewayV2::Route`,
+    `AWS::ApiGatewayV2::Integration` and `AWS::Lambda::Permission`. They are
+    allowed only as children of an allowlisted parent (the HTTP API or the
+    function), and AWS deletes them with that parent.
 
   Anything that bills while idle is off the allowlist: NAT gateways, EC2, RDS,
   provisioned concurrency, and CloudFront, which also takes too long to deploy
@@ -202,7 +212,11 @@ credentials.
   or stopped with findings. A DPL whose `expires_at` has passed shows as a Loose
   End that blocks new deployments. Lambda's implicit log groups sit outside the
   stack, so the template policy requires explicit log groups that the stack owns.
-- **Orphan detection:** every resource is tagged with `mdlm:repository`,
+- **Resource inventory:** after each deploy, the deployment receipt records the
+  stack's resource inventory from `ListStackResources`: each resource's logical
+  ID, type and physical ID. Teardown and orphan checks use this inventory for
+  resources the tag query can't see.
+- **Orphan detection:** the stack and every taggable resource are tagged with `mdlm:repository`,
   `mdlm:deployment`, `mdlm:mode` (`dry-run` or `credit`) and `mdlm:expires-at`.
   `mdlm:deployment` holds the DPL ID for a for-credit deployment or the dry-run
   deployment ID (section 5). `mdlm deployment orphans --aws-profile …` lists
@@ -220,8 +234,11 @@ credentials.
     `mdlm deployment teardown --orphan-resource <arn>`. V1 deletes only the
     allowlisted resource types and asks for confirmation before each deletion.
     Any other resource type is reported for Taylor to remove by hand.
-  - A teardown succeeds only when the stack is `DELETE_COMPLETE` and the tag
-    query for its deployment ID comes back empty. Otherwise it fails and names
+  - A teardown succeeds only when three checks pass: the stack is
+    `DELETE_COMPLETE`; the tag query for its deployment ID comes back empty;
+    and every top-level resource in the recorded inventory (the HTTP API, the
+    function, the table and the log group) reports not found. Untaggable
+    children go with their parents. Otherwise the teardown fails and names
     the remaining ARNs.
 
 ## 5. Dry runs and for-credit runs
@@ -258,11 +275,11 @@ about a day or less, M a few days, L about a week or more).
 
 | # | Where | Candidate issue | Size | Needs |
 | --- | --- | --- | --- | --- |
-| D1 | Kernel | `deployment` action kind, `aws-cdk-deployment@1` capability, `mdlm deployment run`: sandboxed `cdk synth`, then a host-side `cdk deploy --app cdk.out` with the APM profile. Deployment receipt with the output allowlist and version probe. First, confirm `CliCredentialsStackSynthesizer` with a pre-synthesized assembly through APM, and that asset digests are deterministic. | L | D3, O1 |
+| D1 | Kernel | `deployment` action kind, `aws-cdk-deployment@1` capability, `mdlm deployment run`: sandboxed `cdk synth`, then assembly validation (only materialized in-assembly file assets; no `executable` or Docker assets and no escaping paths), then a host-side `cdk deploy --app cdk.out` with the APM profile. Deployment receipt with the output allowlist and version probe. First, confirm `CliCredentialsStackSynthesizer` with a pre-synthesized assembly through APM, and that asset digests are deterministic. | L | D3, O1 |
 | D2 | Kernel | Networked verification mode: `verified-against` DPL link, per-run internal network and allowlist proxy, `MDLM_ENDPOINT` and `MDLM_RUN_ID`, pre/post probes, receipt fields, `error` on drift. | M | D1 |
 | D3 | Kernel | Secret-pattern scan with receipt refusal, for all runtimes and the host CDK CLI output. | S | — |
-| D4 | Kernel | `mdlm deployment teardown` (including `--orphan-stack` and `--orphan-resource` for allowlisted types) and `mdlm deployment orphans`: required tags, teardown receipt, tag-query check, pre-deploy orphan check, dry-run deployment records. | M | D1 |
-| D5 | Kernel | Pre-deploy template policy check: package-declared resource allowlist, no custom resources, concurrency, throttling, retention, removal-policy and tag rules, slot pool. | M | D1 |
+| D4 | Kernel | `mdlm deployment teardown` (including `--orphan-stack` and `--orphan-resource` for allowlisted types) and `mdlm deployment orphans`: required tags, recorded resource inventory, teardown receipt, tag-query and inventory checks, pre-deploy orphan check, dry-run deployment records. | M | D1 |
+| D5 | Kernel | Pre-deploy template policy check: package-declared resource allowlist, no custom resources, untaggable types only as children of allowlisted parents, concurrency, throttling, retention, removal-policy and tag rules, slot pool. | M | D1 |
 | D6 | Kernel | `mdlm deployment dry-run` to dry-run slots, and template/asset digests in the #1111 cache key. | S | D1, #1111 |
 | D7 | Package | DPL and teardown types and actions, `deploys`/`verified-against` links, the teardown-before-terminal Expectation, the expiry Loose End, and the one-DPL-per-for-credit-pass rule. | M | D1, D4, package #46 |
 | D8 | Package | Guidance: CDK app conventions (synthesizer, imported role, explicit log groups, DESTROY, tags, version endpoint), writing endpoint verifiers (run-scoped data, environment `error` versus product `fail`), and the demo's pinned synth image. | S | D7 |
