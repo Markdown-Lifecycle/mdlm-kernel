@@ -57,10 +57,10 @@ if (args[0] === "synth") {
   write("asset.abc/index.js", "export const version = " + JSON.stringify(bake ?? process.env.MDLM_PRODUCT_COMMIT) + ";\n");
   write(stack + ".template.json", {Resources: {}, Outputs: {ApiEndpoint: {Value: "x"}, Secret: {Value: "y"}}});
   const source = scenario === "executable" ? {executable: ["sh", "-c", "touch /tmp/pwned"]} : {path: scenario === "escape" ? "../outside" : "asset.abc", packaging: "zip"};
-  write(stack + ".assets.json", {version: "36.0.0", files: {abc: {source, destinations: {}}}, dockerImages: scenario === "docker" ? {img: {source: {directory: "asset.abc"}, destinations: {}}} : {}});
+  write((scenario === "nested" ? "nested/" : "") + stack + ".assets.json", {version: "36.0.0", files: {abc: {source, destinations: {}}}, dockerImages: scenario === "docker" ? {img: {source: {directory: "asset.abc"}, destinations: {}}} : {}});
   write("manifest.json", {version: "36.0.0", artifacts: {
     [stack]: {type: "aws:cloudformation:stack", environment: "aws://unknown-account/us-east-1", properties: {templateFile: stack + ".template.json", stackName: stack}},
-    [stack + ".assets"]: {type: "cdk:asset-manifest", properties: {file: stack + ".assets.json"}},
+    [stack + ".assets"]: {type: "cdk:asset-manifest", properties: {file: (scenario === "nested" ? "nested/" : "") + stack + ".assets.json"}},
   }});
   if (scenario === "cache") write(".cache/abc.zip", "different bytes than the validated asset");
   if (scenario === "symlink") fs.symlinkSync("/etc/hosts", path.join(out, "asset.abc", "hosts"));
@@ -155,7 +155,7 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     await fs.mkdir(path.join(product, "infra"), {recursive: true});
     git(product, "init", "-q");
     const products: Record<string, {commit: string; revision: string}> = {};
-    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["mismatch", {bake: "0".repeat(40)}]] as const) {
+    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["nested", {}], ["mismatch", {bake: "0".repeat(40)}]] as const) {
       await fs.writeFile(path.join(product, "infra/fixture.json"), JSON.stringify({scenario, ...extra}));
       git(product, "add", "."); git(product, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", scenario);
       const commit = git(product, "rev-parse", "HEAD"), proposal = await draft("record-product", `product-${scenario}`);
@@ -220,20 +220,21 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
       ["endpoint", r => { r.result.endpoint = "https://elsewhere.example/"; }],
       ["probe", r => { r.result.probe.bodyBase64 = Buffer.from("{}").toString("base64"); }],
       ["stack", r => { r.result.stack.name = "mdlm-demo-dry-1"; }],
+      ["stack", r => { r.result.stack.status = "ROLLBACK_COMPLETE"; }],
     ];
-    for (const [field, mutate] of forgeries) {
-      const forged = structuredClone(original); forged.binding.operation = `forged-${field}`; mutate(forged);
+    for (const [index, [field, mutate]] of forgeries.entries()) {
+      const forged = structuredClone(original); forged.binding.operation = `forged-${index}`; mutate(forged);
       const oid = execFileSync("git", ["-C", repository, "hash-object", "-w", "--stdin"], {input: JSON.stringify(forged), encoding: "utf8"}).trim();
-      git(repository, "update-ref", `refs/mdlm/deployment/forged-${field}/attempt-1-receipt`, oid);
-      const proposal = await draft("deploy-product", `record-forged-${field}`);
+      git(repository, "update-ref", `refs/mdlm/deployment/forged-${index}/attempt-1-receipt`, oid);
+      const proposal = await draft("deploy-product", `record-forged-${index}`);
       Object.assign(proposal, {candidates: record.candidates, evidence: {receipt: `git-blob:${oid}`}});
-      await fs.writeFile(path.join(root, `forged-${field}.json`), JSON.stringify(proposal));
-      expect((await cli("proposal", "submit", path.join(root, `forged-${field}.json`))).json.diagnostics[0].message, field).toContain(`receipt ${field} contradicts`);
+      await fs.writeFile(path.join(root, `forged-${index}.json`), JSON.stringify(proposal));
+      expect((await cli("proposal", "submit", path.join(root, `forged-${index}.json`))).json.diagnostics[0].message, field).toContain(`receipt ${field} contradicts`);
     }
 
     // Assembly validation refuses before any AWS call, so nothing is deployed.
     await fs.rm(path.join(state, "stacks"), {recursive: true});
-    for (const [scenario, message] of [["executable", "executable source"], ["docker", "Docker image assets"], ["escape", "inside the assembly"], ["symlink", "symlink"], ["cache", "publisher cache"]]) {
+    for (const [scenario, message] of [["executable", "executable source"], ["docker", "Docker image assets"], ["escape", "inside the assembly"], ["symlink", "symlink"], ["cache", "publisher cache"], ["nested", "at the assembly root"]]) {
       const refused = (await deploy(scenario!, `refuse-${scenario}`)).json.value.receipt.result;
       expect([refused.outcome, refused.phase, refused.deployAttempted], scenario).toEqual(["error", "validation", false]);
       expect(refused.diagnostic).toContain(message);

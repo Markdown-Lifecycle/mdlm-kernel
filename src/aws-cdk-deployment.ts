@@ -68,6 +68,7 @@ export interface DeploymentResult {
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && !value.includes("\0");
 const relative = (value: unknown): value is string => nonEmpty(value) && !value.startsWith("/") && !value.includes("\\") && value.split("/").every(part => part && part !== "." && part !== "..");
+const deployedStatus = (status: unknown) => /_COMPLETE$/.test(String(status)) && !/ROLLBACK|DELETE/.test(String(status));
 const sha256 = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
 export function deploymentBinding(pkg: ProcessPackage) { return pkg.kernelCapabilities[DEPLOYMENT_CAPABILITY]; }
@@ -201,7 +202,7 @@ export async function validateCloudAssembly(assembly: string, expected: {stack: 
   const fileDigest = (name: string) => fs.readFile(path.join(assembly, name)).then(sha256);
   if (!files.includes("manifest.json")) refuse("manifest.json is missing");
   // The asset publisher reuses .cache/<asset-id>.zip, so a synth-written cache could upload bytes other than the validated source.
-  if (files.some(name => name === ".cache" || name.startsWith(".cache/"))) refuse("a pre-built asset publisher cache (.cache) is present");
+  if (files.some(name => name.split("/").includes(".cache"))) refuse("a pre-built asset publisher cache (.cache) is present");
   const manifest = await json("manifest.json");
   if (!object(manifest) || !object(manifest.artifacts)) refuse("manifest.json has no artifacts");
   const stacks: [string, Record<string, any>][] = [], assets: NonNullable<DeploymentResult["assembly"]>["assets"] = [];
@@ -214,6 +215,8 @@ export async function validateCloudAssembly(assembly: string, expected: {stack: 
     if (a.type === "aws:cloudformation:stack") stacks.push([id, a]);
     else if (a.type === "cdk:asset-manifest") {
       const file = inside(`artifact '${id}' file`, a.properties?.file);
+      // The publisher resolves sources and caches beside the manifest; only a root manifest matches what is validated here.
+      if (file.includes("/")) refuse(`asset manifest '${file}' must be at the assembly root`);
       if (!files.includes(file)) refuse(`asset manifest '${file}' is missing`);
       const assetManifest = await json(file);
       if (!object(assetManifest)) refuse(`asset manifest '${file}' is malformed`);
@@ -306,7 +309,7 @@ export async function executeDeployment(binding: DeploymentBinding): Promise<Dep
 
     result.phase = "stack";
     const stack = await describeStack(binding, host);
-    if (!stack || !/_COMPLETE$/.test(String(stack.StackStatus)) || /ROLLBACK|DELETE/.test(String(stack.StackStatus))) throw new Error(`Stack '${binding.stack}' is not deployed after cdk deploy (${String(stack?.StackStatus ?? "absent")})`);
+    if (!stack || !deployedStatus(stack.StackStatus)) throw new Error(`Stack '${binding.stack}' is not deployed after cdk deploy (${String(stack?.StackStatus ?? "absent")})`);
     const account = /^arn:aws[a-z-]*:cloudformation:[^:]+:(\d{12}):/.exec(String(stack.StackId))?.[1];
     if (account !== result.access.account) throw new Error("Deployed stack account differs from the caller identity");
     result.stack = {account, region: binding.config.region, name: binding.stack, id: String(stack.StackId), status: String(stack.StackStatus), lastUpdatedTime: String(stack.LastUpdatedTime ?? stack.CreationTime)};
@@ -397,7 +400,7 @@ export async function requireCoherentDeployment(binding: DeploymentBinding, resu
   if (result.outcome !== "pass") return;
   const source = await authenticateProductSource(binding);
   if (result.phase !== "probe" || !result.deployAttempted || result.deploy?.exitCode !== 0 || result.source?.commit !== source.sourceCommit || result.source.tree !== source.sourceTree) refuse("source or deploy");
-  if (!stack || !endpoint || !result.expiresAt) refuse("stack");
+  if (!stack || !deployedStatus(stack.status) || !endpoint || !result.expiresAt) refuse("stack");
   // The match is recomputed from the recorded response, never taken from the stored flag.
   const body = Buffer.from(String(probe?.bodyBase64 ?? ""), "base64").toString("utf8");
   if (!probe || probe.url !== `${endpoint!.replace(/\/+$/, "")}${binding.config.probe_path}` || probe.expectedVersion !== binding.sourceCommit
