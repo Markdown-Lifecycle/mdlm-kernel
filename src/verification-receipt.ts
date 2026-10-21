@@ -5,6 +5,7 @@ import path from "node:path";
 import { executeDockerVerification, authenticateVerificationSource, authenticateProductSource, type DockerVerificationResult, type IndependentVerification } from "./docker-verification.js";
 import { recaptureVerificationReport, verificationReportOutcome } from "./independent-verification-execution.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
+import { refuseSecretResult } from "./secret-scan.js";
 
 const exec = promisify(execFile);
 export interface VerificationBinding {
@@ -83,7 +84,8 @@ export async function runVerificationReceipt(root: string, binding: Verification
   };
   // The attempt marker is durable before Docker starts. An interrupted process cannot silently rerun it.
   const started = await persist({binding, attempt, state: "started"}, previous?.oid ?? "0".repeat(40));
-  const result = await executeDockerVerification(binding);
+  // A secret in captured output refuses the result before anything from it is written.
+  const result = refuseSecretResult(await executeDockerVerification(binding));
   const receipt = {binding, attempt, state: "completed", result};
   const oid = await persist(receipt, started);
   return {oid, receipt};

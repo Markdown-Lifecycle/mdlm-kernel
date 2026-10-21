@@ -8,6 +8,7 @@ import { authenticateProductSource, authenticateVerificationSource, executeDocke
 import { directState } from "./direct-proposal.js";
 import { independentBinding, independentExecutionBinding, selectedActivities } from "./independent-verification.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
+import { refuseSecretResult } from "./secret-scan.js";
 import { DRY_RUN_CONTRACT, type VerificationBinding } from "./verification-receipt.js";
 
 // A fixed non-operation identity: dry runs register no execution refs.
@@ -105,7 +106,7 @@ export async function dryRunActivities(cacheDirectory: string, inputs: DryRunAct
     let result: DockerVerificationResult;
     if (hit) result = valid.result;
     else {
-      result = await execute(binding);
+      result = refuseSecretResult(await execute(binding));
       // Only completed container runs are reproducible readiness evidence; setup failures rerun next time.
       if (result.started) {
         const entry: CacheEntry = {contract: DRY_RUN_CONTRACT, credit: false, product: product.revision_id, activity: activity.revision_id, sourceCommit: binding.sourceCommit, components, result};

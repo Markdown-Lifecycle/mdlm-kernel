@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { captureVerificationReport, validateIndependentVerification, verificationReportOutcome,
   type IndependentVerification, type VerificationArtifact, type VerificationCaseResult } from "./independent-verification-execution.js";
+import type { SecretFinding } from "./secret-scan.js";
 export type { IndependentVerification, VerificationArtifact, VerificationCaseResult } from "./independent-verification-execution.js";
 
 export interface DockerVerificationInput {
@@ -46,6 +47,8 @@ export interface DockerVerificationResult {
   caseResults?: VerificationCaseResult[];
   artifacts?: VerificationArtifact[];
   rawReportBase64?: string;
+  /** Present only on a result refused by the secret-pattern scan. */
+  secretFindings?: SecretFinding[];
 }
 
 export interface CommandResult {

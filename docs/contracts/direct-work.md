@@ -258,6 +258,15 @@ These settings are fixed through the public CLI. There is no activity field or
 execution flag to override the timeout, PID limit, shared-memory or tmpfs size, networking or
 capture budgets.
 
+Before a receipt or dry-run result is stored, the kernel scans every stored field
+for secret patterns: AWS access key IDs (`AKIA`/`ASIA` and 16 characters), AWS
+secret access key and session token assignments, `Authorization:` headers with a
+credential, and PEM private-key blocks. Base64 fields are scanned as decoded
+bytes. A match refuses the result: the outcome is `error`, `secretFindings` lists
+each pattern class, field and byte offset, and every field with a match is
+stored empty. The secret is never stored or printed. Remove the leak from the
+product or verifier and run a new operation.
+
 Independent verification mounts the committed product at `/product` and verifier
 at `/verification`, both read-only, and starts in `/verification`. It supplies
 `MDLM_PRODUCT_DIR=/product` and `MDLM_EVIDENCE_DIR=/evidence`. The writable
