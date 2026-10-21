@@ -6,7 +6,7 @@ import path from "node:path";
 import {beforeAll, expect, test} from "vitest";
 import {loadProcessPackage, type DatumEnvelope} from "../src/index.js";
 import {buildDirectReviewContext} from "../src/direct-review-context.js";
-import {canonicalReviewPacket} from "../src/external-review.js";
+import {reviewPacketDigest} from "../src/external-review.js";
 import type {DirectContext} from "../src/direct-contract.js";
 
 const datum = (type: string, name: string, revision = 1): DatumEnvelope => ({id: `${type}-${name}`, revision, revision_id: `${type}-${name}-r${String(revision).padStart(5, "0")}`, type, payload: {}, links: [], body: "Exact fixture", created_by: {process_ref: "fixture"}});
@@ -43,9 +43,9 @@ test("a corrected requirement set's review context carries its exact lineage, an
 });
 
 test("a later judgment on a predecessor changes the bound context, so an earlier registration cannot match", async () => {
-  const before = canonicalReviewPacket(await buildDirectReviewContext(context));
+  const before = reviewPacketDigest(await buildDirectReviewContext(context));
   const late = {...datum("REV", "late"), payload: {publication: "recorded", outcome: "fail", findings: "Late"}, links: [link("reviews", first)]};
-  expect(canonicalReviewPacket(await buildDirectReviewContext({...context, data: [...context.data, late]}))).not.toBe(before);
+  expect(reviewPacketDigest(await buildDirectReviewContext({...context, data: [...context.data, late]}))).not.toBe(before);
 });
 
 test("a revised verification activity carries its predecessor and the failed review it answers", async () => {

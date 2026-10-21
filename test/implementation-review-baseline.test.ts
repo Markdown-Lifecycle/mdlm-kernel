@@ -7,7 +7,7 @@ import {afterAll, beforeAll, expect, test} from "vitest";
 import {loadProcessPackage, type DatumEnvelope} from "../src/index.js";
 import {buildDirectReviewContext} from "../src/direct-review-context.js";
 import {verificationAuthoringContext} from "../src/independent-verification.js";
-import {canonicalReviewPacket} from "../src/external-review.js";
+import {reviewPacketDigest} from "../src/external-review.js";
 import {sourceAssessmentTargets} from "../src/direct-guidance.js";
 import type {DirectContext} from "../src/direct-contract.js";
 
@@ -108,11 +108,11 @@ test("activity review retains its graph and verifier while excluding available b
     expect(reviewed.verifierSources?.[0]?.files[0]?.content).toBe("// Requirement-derived public checks.\n");
     expect(JSON.stringify(reviewed)).not.toContain("export const answer");
     // These records were absent from method context; their content now binds registration.
-    const canonical = canonicalReviewPacket(reviewed);
+    const canonical = reviewPacketDigest(reviewed);
     const authoring = verificationAuthoringContext(methodContext, set.revision_id);
     for (const record of [change, approval, oldRequirement, oldRefusal]) {
       const changed = {...methodContext, data: methodContext.data.map(d => d === record ? {...d, body: "Changed authoritative context"} : d)};
-      expect(canonicalReviewPacket(await buildDirectReviewContext(changed))).not.toBe(canonical);
+      expect(reviewPacketDigest(await buildDirectReviewContext(changed))).not.toBe(canonical);
       expect(verificationAuthoringContext(changed, set.revision_id)).toEqual(authoring);
     }
     expect(authoring).not.toHaveProperty("priorNormativeContext");

@@ -6,7 +6,8 @@ import path from "node:path";
 import {expect, test} from "vitest";
 import {parse} from "yaml";
 import {directDigest} from "../src/direct-proposal.js";
-import {canonicalReviewPacket, reviewDigest} from "../src/external-review.js";
+import {reviewDigest, reviewPacketDigest} from "../src/external-review.js";
+import {canonicalChunks} from "../src/json-stream.js";
 import {processPackageDigest} from "../src/process-package-digest.js";
 import vectors from "./fixtures/digest-vectors.json" with {type: "json"};
 
@@ -36,8 +37,9 @@ test("published digest vectors match the current kernel", async () => {
   for (const vector of vectors.proposal) expect(directDigest(vector.bytes)).toBe(vector.digest);
   for (const vector of vectors.transaction) expect(`direct-${hex(vector.operation)}`).toBe(vector.id);
   for (const vector of vectors.reviewContext) {
-    expect(canonicalReviewPacket(vector.input)).toBe(vector.preimage);
+    expect([...canonicalChunks(vector.input)].join("")).toBe(vector.preimage);
     expect(reviewDigest(vector.preimage)).toBe(vector.contextSha256);
+    expect(reviewPacketDigest(vector.input)).toBe(vector.contextSha256);
   }
   expect(vectors.reviewContext[0]!.contextSha256).toBe(vectors.reviewContext[1]!.contextSha256);
   expect(vectors.reviewContext[0]!.contextSha256).not.toBe(vectors.reviewContext[2]!.contextSha256);
@@ -118,7 +120,7 @@ test("a lifecycle repository's reported digests follow the documented preimages"
     cli(["review", "register", reviewProposal.file, verdict.file], true);
     const realRepository = await fs.realpath(repository);
     const registered = JSON.parse(await fs.readFile(path.join(registry, `${hex(realRepository)}-review.json`), "utf8"));
-    expect(registered.contextSha256).toBe(reviewDigest(canonicalReviewPacket(context)));
+    expect(registered.contextSha256).toBe(reviewPacketDigest(context));
     expect(registered.verdictSha256).toBe(hex(verdict.bytes));
     expect(registered.proposalSha256).toBe(hex(reviewProposal.bytes));
     expect(context.action.when.contract.definitionPath.startsWith(`${realRepository}/.lifecycle/packages/`)).toBe(true);

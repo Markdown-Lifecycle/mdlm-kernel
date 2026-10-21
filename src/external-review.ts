@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { DirectReviewContext } from "./direct-review-context.js";
+import { canonicalDigest } from "./json-stream.js";
 
 export interface ExternalReviewProof {
   contract: "mdlm-registered-review@2";
@@ -13,11 +14,8 @@ export interface ExternalReviewProof {
 }
 interface RegisteredReview extends ExternalReviewProof { verdict: string }
 export const reviewDigest = (source: string): string => createHash("sha256").update(source).digest("hex");
-export function canonicalReviewPacket(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalReviewPacket).join(",")}]`;
-  if (value !== null && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${canonicalReviewPacket(item)}`).join(",")}}`;
-  return JSON.stringify(value);
-}
+/** SHA-256 of the canonical review packet (sorted keys), streamed so no packet string is built. */
+export const reviewPacketDigest = canonicalDigest;
 async function registryFile(root: string, operation: string): Promise<string> {
   if (!/^[a-zA-Z0-9-]{1,80}$/.test(operation)) throw new Error("Invalid review operation identity");
   const configured = process.env.MDLM_REVIEW_REGISTRY;
@@ -28,7 +26,7 @@ async function registryFile(root: string, operation: string): Promise<string> {
   return path.join(registry, `${reviewDigest(repository)}-${operation}.json`);
 }
 function proof(operation: string, context: DirectReviewContext, verdict: string, proposal: string): ExternalReviewProof {
-  return {contract: "mdlm-registered-review@2", operation, contextSha256: reviewDigest(canonicalReviewPacket(context)), verdictSha256: reviewDigest(verdict), proposalSha256: reviewDigest(proposal)};
+  return {contract: "mdlm-registered-review@2", operation, contextSha256: reviewPacketDigest(context), verdictSha256: reviewDigest(verdict), proposalSha256: reviewDigest(proposal)};
 }
 export function validateReviewerVerdict(proposalSource: string, verdictSource: string): void {
   const proposal = JSON.parse(proposalSource), verdict = JSON.parse(verdictSource);
