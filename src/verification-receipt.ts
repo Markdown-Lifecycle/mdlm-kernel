@@ -19,6 +19,8 @@ export interface VerificationBinding {
   independentVerification?: IndependentVerification;
   formalFiles?: string[];
 }
+/** Dry-run results are readiness checks, never receipts; credit paths reject this contract. */
+export const DRY_RUN_CONTRACT = "mdlm-execution-dry-run@1";
 export const verificationRef = (binding: VerificationBinding) => `refs/mdlm/execution/${binding.operation}`;
 async function git(root: string, args: string[]) {
   return (await exec("git", ["-C", root, ...args], {env: repositoryGitEnvironment(), maxBuffer: 64 * 1024 * 1024})).stdout.trim();
@@ -26,7 +28,10 @@ async function git(root: string, args: string[]) {
 export async function readVerificationReceiptBlob(root: string, oid: string) {
   if (!/^[a-f0-9]{40}$/.test(oid)) throw new Error("Verification receipt must name an exact Git blob");
   const source = await git(root, ["cat-file", "blob", oid]);
-  return {oid, receipt: JSON.parse(source) as {binding: VerificationBinding; attempt: number; result?: Awaited<ReturnType<typeof executeDockerVerification>>; state: string}};
+  const receipt = JSON.parse(source) as {binding: VerificationBinding; attempt: number; result?: Awaited<ReturnType<typeof executeDockerVerification>>; state: string; contract?: unknown};
+  // Every credit path reads receipts here; a stored dry-run result is never evidence.
+  if (receipt?.contract === DRY_RUN_CONTRACT) throw new Error("Dry-run results are non-credit readiness checks and cannot be used as execution evidence");
+  return {oid, receipt};
 }
 export async function readBoundVerificationReceipt(root: string, binding: VerificationBinding) {
   const oid = await git(root, ["rev-parse", "--verify", "--quiet", `${verificationRef(binding)}/latest`]).catch(error => { if (error.code === 1) return undefined; throw error; });
