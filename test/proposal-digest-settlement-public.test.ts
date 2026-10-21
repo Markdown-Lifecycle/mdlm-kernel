@@ -51,6 +51,14 @@ test("settlement and replay refuse a stored proposal digest that contradicts its
     const q2 = `${JSON.stringify(JSON.parse(q.source), null, 2)}\n`, q2File = path.join(root, "review-q2.json");
     await fs.writeFile(q2File, q2);
     await fs.writeFile(executionFile, JSON.stringify({...tx, proposalDigest: `sha256:${createHash("sha256").update(q2).digest("hex")}`}, null, 2) + "\n");
+    // Also rewrite the publication anchor (ADR 0010 doesn't stop ref writes); the retained review proof must still refuse.
+    const reanchor = async () => {
+      const directory = path.dirname(executionFile);
+      const files = (await fs.readdir(directory, {recursive: true, withFileTypes: true})).filter(entry => entry.isFile()).map(entry => path.relative(directory, path.join(entry.parentPath, entry.name))).sort();
+      const source = `${JSON.stringify({contract: "mdlm-publication-anchor@1", transaction: q.result.transaction, files: await Promise.all(files.map(async file => ({path: file, sha256: createHash("sha256").update(await fs.readFile(path.join(directory, file))).digest("hex")})))})}\n`;
+      git("update-ref", `refs/mdlm/publication/${q.result.transaction}`, execFileSync("git", ["-C", repository, "hash-object", "-w", "--stdin"], {input: source, encoding: "utf8"}).trim());
+    };
+    await reanchor();
     const state = [git("status", "--porcelain"), git("show-ref")];
     for (const args of [["proposal", "settlement", "review"], ["proposal", "submit", q2File], ["proposal", "submit", q.file]]) {
       expect(cli(1, ...args).diagnostics[0].message, args.join(" ")).toContain("contradicts its registered review proof");
@@ -58,6 +66,7 @@ test("settlement and replay refuse a stored proposal digest that contradicts its
     expect([git("status", "--porcelain"), git("show-ref")]).toEqual(state);
     // Valid alternative: the untouched transaction settles and replays its exact registered bytes.
     await fs.writeFile(executionFile, original);
+    await reanchor();
     expect(cli(0, "proposal", "settlement", "review")).toMatchObject(accepted);
     expect(cli(0, "proposal", "submit", q.file)).toMatchObject(accepted);
     expect(cli(1, "proposal", "submit", q2File).diagnostics[0].message).toContain("different candidate bytes");
