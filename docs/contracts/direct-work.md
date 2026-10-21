@@ -228,6 +228,12 @@ digests, caller identity ARN, stack ID and last update time, allowlisted outputs
 the endpoint and the result of `GET <endpoint><probe_path>`, which must contain
 the product commit. Any refusal or mismatch is outcome `error`. The started marker
 is written before anything runs, and an interrupted deployment is never re-run.
+Before the receipt is written, the kernel scans it for the secret patterns listed
+under the native runtime below, including synth and host CDK CLI output, stack
+outputs and the probe body. A match makes the outcome `error` and lists each
+pattern class, field and byte offset in `secretFindings`. Only the matching
+values are removed (a matching base64 stream is stored empty), so the stack,
+exit codes and attempt state still record what reached AWS.
 A `deployment` proposal cites the receipt as `evidence.receipt` and links
 `deploys` to the exact product; the kernel fills the managed fields.
 

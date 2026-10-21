@@ -8,6 +8,7 @@ import type { DatumEnvelope, ProcessPackage } from "./index.js";
 import type { DirectAction } from "./direct-contract.js";
 import { archiveSource, authenticateProductSource, checked, execute } from "./docker-verification.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
+import { refuseSecretValues, type SecretFinding } from "./secret-scan.js";
 
 // ADR-0009 section 1. Synth runs product code in the sandbox; only a validated
 // assembly reaches the host CDK CLI, which alone uses the operator's APM profile.
@@ -63,6 +64,8 @@ export interface DeploymentResult {
   probe?: {url: string; status: number | null; expectedVersion: string; matched: boolean; bodyBase64: string};
   deployedVersion?: string;
   expiresAt?: string;
+  /** Present only on a result refused by the secret-pattern scan. */
+  secretFindings?: SecretFinding[];
 }
 
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -372,9 +375,9 @@ export async function runDeploymentReceipt(root: string, binding: DeploymentBind
     return oid;
   };
   const started = await persist({binding, attempt: 1, state: "started"}, "0".repeat(40));
-  const result = await execute(binding);
-  // D3 (#1129) CALL SITE: scan the synth streams, host CDK CLI output, stack outputs and
-  // probe body here and refuse the receipt on a secret-pattern match, before it is written.
+  // Synth streams, host CDK CLI output, stack outputs and the probe body are scanned
+  // before the receipt is written; a secret refuses the result (ADR-0009 section 3).
+  const result = refuseSecretValues(await execute(binding), "the product or its CDK app");
   const receipt: DeploymentReceipt = {binding, attempt: 1, state: "completed", result};
   return {oid: await persist(receipt, started), receipt};
 }
