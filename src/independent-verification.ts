@@ -125,15 +125,25 @@ export function verificationStatus(state: State, subjectId: string) {
   const selection = product ? exact(state.data, targets(product, product.type === b.prototype_type ? "explores" : "implements")[0] ?? "") : subject;
   const requirements = selectedTargets(state, selection);
   const activities = product ? selectedActivities(state, product) : [];
+  // Index reviews and result history once; each keeps lifecycle data order.
+  const byRevision = new Map(state.data.map(d => [d.revision_id, d]));
+  const reviewsOf = new Map<string, DatumEnvelope[]>(), historyOf = new Map<string, DatumEnvelope[]>();
+  const add = (index: Map<string, DatumEnvelope[]>, key: string, d: DatumEnvelope) => index.set(key, [...index.get(key) ?? [], d]);
+  for (const d of state.data) {
+    if (d.type === b.review_type) for (const id of new Set(targets(d, "reviews"))) add(reviewsOf, id, d);
+    if (d.type === b.result_type) for (const id of new Set(targets(d, "evaluates").flatMap(id => byRevision.get(id)?.id ?? []))) add(historyOf, id, d);
+  }
+  const evidence = new Map(activities.map(activity => {
+    const reviews = reviewsOf.get(activity.revision_id) ?? [];
+    return [activity.revision_id, {reviews, current: currentVerificationResults(state, product!.revision_id, activity.revision_id), history: historyOf.get(activity.id) ?? []}];
+  }));
   const rows = requirements.map(requirement => {
     const claims = activities.flatMap(activity => {
       const claim = (activity.payload.coverage as CoverageClaim[]).find(c => c.target === requirement.revision_id);
       if (!claim) return [];
-      const reviews = state.data.filter(d => d.type === b.review_type && targets(d, "reviews").includes(activity.revision_id));
+      const {reviews, current, history} = evidence.get(activity.revision_id)!;
       const adequacy = reviews.some(r => r.payload.outcome === "fail") ? "rejected" : reviews.some(r => r.payload.outcome === "pass") ? "adequate" : "awaiting-review";
-      const current = currentVerificationResults(state, product!.revision_id, activity.revision_id);
       const result = current.length === 1 ? current[0] : undefined;
-      const history = state.data.filter(d => d.type === b.result_type && targets(d, "evaluates").some(id => state.data.find(a=>a.revision_id===id)?.id===activity.id));
       const cases = claim.case_ids.map(id => {
         const actual = (result?.payload.case_results as any[] | undefined)?.find(c => c.case_id === id);
         return {id, outcome: actual?.outcome ?? "not-run", actualResults: actual?.actual_results ?? [], evidenceRefs: actual?.evidence_refs ?? []};
