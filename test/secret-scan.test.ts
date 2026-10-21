@@ -26,6 +26,9 @@ test("each secret pattern class is found at its byte offset without echoing the 
   expect(scanForSecrets("stdout", join('{"SecretAccessKey": "', "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", '", "SessionToken": "', "FwoGZXIvYXdzEXAMPLE0123", '"}')).map(f => f.pattern)).toEqual(["aws-secret-access-key", "aws-session-token"]);
   expect(scanForSecrets("stdout", join("{'authorization': 'AWS4-HMAC-SHA256 ", "Credential=EXAMPLE/20261021'}"))[0]?.pattern).toBe("authorization-header");
   expect(scanForSecrets("stdout", join("-----BEGIN OPENSSH ", "PRIVATE KEY-----"))[0]?.pattern).toBe("private-key-block");
+  // A short credential is still a credential: Basic YTpi encodes a:b.
+  const short = refuseSecretResult({...representativeResult(), stdoutBase64: Buffer.from(join("Authorization: Basic ", "YTpi")).toString("base64")});
+  expect(short).toMatchObject({outcome: "error", stdoutBase64: "", secretFindings: [{pattern: "authorization-header", field: "stdoutBase64", offset: 0}]});
 });
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");

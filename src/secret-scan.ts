@@ -5,7 +5,7 @@ export const SECRET_PATTERNS = {
   "aws-access-key-id": /(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])/,
   "aws-secret-access-key": /(?:aws_?)?secret_?access_?key["']?\s*[:=]\s*["']?[A-Za-z0-9/+]{16,}/i,
   "aws-session-token": /(?:(?:aws_?)?session_?token|x-amz-security-token)["']?\s*[:=]\s*["']?[A-Za-z0-9/+]{16,}/i,
-  "authorization-header": /\bauthorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest|negotiate|aws4-hmac-sha256)\s+\S{8,}/i,
+  "authorization-header": /\bauthorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest|negotiate|aws4-hmac-sha256)\s+\S/i,
   "private-key-block": /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/,
 } as const;
 export type SecretPattern = keyof typeof SECRET_PATTERNS;
