@@ -321,8 +321,9 @@ earlier IMP of the same stable lineage and exact package. Every later revision u
 to the successor must be selection-only, and every current result for the activity
 on an intermediate revision must apply that same original. Name the original
 execution RES, never a historical one. The kernel compares the complete product
-payload except derived source_changes, retains source commit/tree, inventory,
-roles/ranges, command and acceptance scope/formal files, and verifies exact
+payload except derived source_changes and ignores the descriptive body. It
+retains source commit/tree, inventory, roles/ranges, command and acceptance
+scope/formal files, and verifies exact
 requirements, activity authoring context/interfaces and verifier execution
 contract. Changed sibling activities alone do not invalidate the unchanged method.
 Reused observations, prototypes, source reverts and cross-package reuse are
