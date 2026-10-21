@@ -6,8 +6,9 @@ import { promisify, isDeepStrictEqual } from "node:util";
 import type { DatumEnvelope, ProcessPackage } from "./index.js";
 import type { DirectTransaction } from "./direct-contract.js";
 import { independentBinding, independentExecutionBinding, currentVerificationResults } from "./independent-verification.js";
-import { readVerificationReceiptBlob, validateVerificationReceipt, verificationRef, type VerificationBinding } from "./verification-receipt.js";
+import { readGitBlobs, readVerificationReceiptBlob, validateVerificationReceipt, verificationRef, type VerificationBinding } from "./verification-receipt.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
+import { progress } from "./progress.js";
 
 const exec = promisify(execFile);
 type State = {root: string; pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]};
@@ -24,12 +25,45 @@ export interface HistoricalObservation {
 const links = (d: DatumEnvelope, type: string) => d.links.filter(l => l.type === type).map(l => l.target);
 const exact = (s: State, id: string) => {const d = s.data.find(d => d.revision_id === id); if (!d) throw new Error(`Historical observation revision '${id}' is unavailable`); return d;};
 async function git(root: string, args: string[]) {return (await exec("git", ["-C", root, ...args], {env: repositoryGitEnvironment(), maxBuffer: 64 * 1024 * 1024})).stdout.trim();}
-export async function resultPublication(state: State, datum: DatumEnvelope) {
-  const matches: DirectTransaction[] = [];
-  for (const id of await fs.readdir(path.join(state.root, ".lifecycle/data/.transactions"))) {
-    const tx = JSON.parse(await fs.readFile(path.join(state.root, ".lifecycle/data/.transactions", id, "execution.json"), "utf8")) as DirectTransaction;
-    if (tx.contract === "mdlm-direct-transaction@1" && tx.outputs.some(d => isDeepStrictEqual(d, datum))) matches.push(tx);
+const publicationIndexes = new WeakMap<DatumEnvelope[], Promise<Map<string, DirectTransaction[]>>>();
+/** Direct transactions by the revisions they published, read once per loaded lifecycle state. */
+export function directPublications(state: Pick<State, "root" | "data">): Promise<Map<string, DirectTransaction[]>> {
+  let index = publicationIndexes.get(state.data);
+  if (!index) {
+    index = (async () => {
+      const byRevision = new Map<string, DirectTransaction[]>();
+      for (const id of await fs.readdir(path.join(state.root, ".lifecycle/data/.transactions"))) {
+        const tx = JSON.parse(await fs.readFile(path.join(state.root, ".lifecycle/data/.transactions", id, "execution.json"), "utf8")) as DirectTransaction;
+        if (tx.contract !== "mdlm-direct-transaction@1") continue;
+        for (const revision of new Set(tx.outputs.map(d => d.revision_id))) byRevision.set(revision, [...byRevision.get(revision) ?? [], tx]);
+      }
+      return byRevision;
+    })();
+    publicationIndexes.set(state.data, index);
   }
+  return index;
+}
+type SavedReceipt = Awaited<ReturnType<typeof readVerificationReceiptBlob>>["receipt"];
+const receiptBlobs = new WeakMap<DatumEnvelope[], Map<string, string>>();
+/** Every current execution ref and its receipt, in ref order. Blobs are content-addressed, so each is read once per loaded lifecycle state. */
+async function* executionReceipts(state: State): AsyncGenerator<{ref: string; receipt: SavedReceipt}> {
+  const refs = (await git(state.root, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/mdlm/execution"])).split("\n").filter(Boolean).map(line => line.split(" ") as [string, string]);
+  let cache = receiptBlobs.get(state.data);
+  if (!cache) receiptBlobs.set(state.data, cache = new Map());
+  for (const [oid, source] of await readGitBlobs(state.root, refs.map(([, oid]) => oid).filter(oid => /^[a-f0-9]{40}$/.test(oid) && !cache.has(oid)))) cache.set(oid, source);
+  for (const [ref, oid] of refs) {
+    let receipt: SavedReceipt | undefined;
+    try { const source = cache.get(oid); if (source !== undefined) receipt = JSON.parse(source); } catch { /* the single read below reports it */ }
+    // Anything the batch could not parse keeps the original single-read diagnostic, in ref order.
+    yield {ref, receipt: receipt ?? (await readVerificationReceiptBlob(state.root, oid)).receipt};
+  }
+}
+/** The direct transactions that published this exact datum. */
+export async function datumPublications(state: Pick<State, "root" | "data">, datum: DatumEnvelope): Promise<DirectTransaction[]> {
+  return ((await directPublications(state)).get(datum.revision_id) ?? []).filter(tx => tx.outputs.some(d => isDeepStrictEqual(d, datum)));
+}
+export async function resultPublication(state: State, datum: DatumEnvelope) {
+  const matches = await datumPublications(state, datum);
   if (matches.length !== 1 || !isDeepStrictEqual(matches[0]!.package, state.package)) throw new Error("Historical observation requires one authenticated same-package result publication");
   return matches[0]!;
 }
@@ -69,9 +103,10 @@ export async function historicalApplicability(state: State, product: DatumEnvelo
   const payload = (d: DatumEnvelope) => {const {source_changes, ...rest} = d.payload; return rest;};
   const semanticLinks = (d: DatumEnvelope) => d.links.filter(l => !["verification", "corrects"].includes(l.type)).map(l => `${l.type}\0${l.target}`).sort();
   // Every revision after the original's product is selection-only, so no source revert qualifies.
+  // The body is descriptive prose: the payload, semantic links and execution binding below carry every normative field.
   const lineage = state.data.filter(d => d.id === product.id && d.revision > prior.revision && d.revision < product.revision);
   if (Array.from({length: product.revision - prior.revision - 1}, (_, i) => prior.revision + 1 + i).some(n => lineage.filter(d => d.revision === n).length !== 1)) throw new Error("Historical applicability requires every intermediate implementation revision");
-  for (const later of [...lineage, product]) if (later.type !== prior.type || !isDeepStrictEqual(payload(prior), payload(later)) || !isDeepStrictEqual(semanticLinks(prior), semanticLinks(later)) || prior.body !== later.body) throw new Error("Historical applicability requires unchanged product source, inventory, attribution, scope, requirements and command");
+  for (const later of [...lineage, product]) if (later.type !== prior.type || !isDeepStrictEqual(payload(prior), payload(later)) || !isDeepStrictEqual(semanticLinks(prior), semanticLinks(later))) throw new Error("Historical applicability requires unchanged product source, inventory, attribution, scope, requirements and command");
   // A later recorded result for this activity in the lineage owns currency unless it applies this same original.
   if (lineage.some(d => currentVerificationResults(state, d.revision_id, activity).some(r => (r.payload.historical_observation as HistoricalObservation | undefined)?.original_result !== originalId))) throw new Error("Historical original result is superseded by a later result in the lineage");
   if (!isDeepStrictEqual(links(original, "evaluates"), [activity]) || !isDeepStrictEqual(links(original, "verifies"), links(product, "implements"))) throw new Error("Historical result must bind the exact unchanged activity and requirements");
@@ -85,16 +120,13 @@ export async function historicalApplicability(state: State, product: DatumEnvelo
   const successor = independentExecutionBinding(state, product, activity, expected.operation);
   if (!isDeepStrictEqual({...successor, inputs: expected.inputs}, expected)) throw new Error("Historical applicability execution contract changed");
   if (!currentVerificationResults(state, priorId, activity).some(d => d.revision_id === originalId)) throw new Error("Historical original result is superseded");
-  const refs = await git(state.root, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/mdlm/execution"]);
-  for (const line of refs.split("\n").filter(Boolean)) {
-    const [ref, oid] = line.split(" ");
-    const receipt = (await readVerificationReceiptBlob(state.root, oid!)).receipt;
+  for await (const {ref, receipt} of executionReceipts(state)) {
     const b = receipt.binding;
     const inputs = b.inputs as {name: string; revisions: string[]}[];
     const implementation = Array.isArray(inputs) && inputs.find(i => i.name === "implementation")?.revisions?.[0];
     const p = state.data.find(d => d.revision_id === implementation);
     if (!p || p.id !== product.id || !isDeepStrictEqual(b.package, expected.package) || b.repositoryPath !== expected.repositoryPath || b.sourceCommit !== expected.sourceCommit || !isDeepStrictEqual(b.independentVerification, expected.independentVerification) || !isDeepStrictEqual(inputs.find(i => i.name === "requirements"), (expected.inputs as typeof inputs).find(i => i.name === "requirements"))) continue;
-    if (ref!.endsWith("/latest") && receipt.state === "started") throw new Error("Historical applicability is blocked by an unresolved relevant execution attempt");
+    if (ref.endsWith("/latest") && receipt.state === "started") throw new Error("Historical applicability is blocked by an unresolved relevant execution attempt");
     if (receipt.result && receipt.result.startedAt >= verified.saved.receipt.result!.startedAt && receipt.result.outcome !== "pass") throw new Error("Historical applicability is blocked by a later relevant failing or errored execution, including unrecorded results");
   }
   return {verified, original, prior, provenance: {
@@ -113,5 +145,7 @@ export async function validateHistoricalResult(state: State, datum: DatumEnvelop
   return {...applicable, stored};
 }
 export async function validateCurrentHistoricalResults(state: State, product: DatumEnvelope) {
-  for (const activity of links(product, "verification")) for (const datum of currentVerificationResults(state, product.revision_id, activity)) if (datum.payload.historical_observation !== undefined) await validateHistoricalResult(state, datum);
+  const historical = links(product, "verification").flatMap(activity => currentVerificationResults(state, product.revision_id, activity)).filter(datum => datum.payload.historical_observation !== undefined);
+  const report = progress("historical results", historical.length);
+  for (const [index, datum] of historical.entries()) { await validateHistoricalResult(state, datum); report(index + 1); }
 }

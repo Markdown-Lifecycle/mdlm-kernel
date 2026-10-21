@@ -6,14 +6,14 @@ import { promisify, isDeepStrictEqual } from "node:util";
 import { resolveType, type DatumEnvelope } from "./index.js";
 import type { DirectAction, DirectCandidate, DirectContext, DirectProposal, DirectTransaction, DirectWorkItem, DirectProposalResult } from "./direct-contract.js";
 import { selectedRepositoryPackage } from "./selected-package.js";
-import { readRepositoryData, publishTransactionData, provisionalLifecycleRecord } from "./lifecycle-repository.js";
+import { readRepositoryData, publishTransactionData, provisionalLifecycleRecord, payloadSchemaDiagnostics } from "./lifecycle-repository.js";
 import { withRepositoryLock } from "./repository-lock.js";
 import { resolvePrompt } from "./direct-prompt.js";
 import { evaluateExpressionValue } from "./evaluator.js";
 import { compileExpressionValue } from "./expression.js";
 import { finalizeDirectDomain } from "./direct-domain.js";
 import { validateDirectAuthority, buildDirectReviewContext, registerDirectReview } from "./direct-authority.js";
-import { readVerificationReceiptBlob, validateVerificationReceipt, type VerificationBinding, runVerificationReceipt, verificationRef } from "./verification-receipt.js";
+import { readVerificationReceiptBlob, requireCoherentVerificationResult, validateVerificationReceipt, type VerificationBinding, runVerificationReceipt, verificationRef } from "./verification-receipt.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
 import { requirementTraceBinding } from "./requirement-trace.js";
 import { authorablePayloadSchema, sourceAssessmentTargets, requirementAuthoringTargets } from "./direct-guidance.js";
@@ -250,12 +250,15 @@ export async function submitDirectProposal(root:string,source:string,authorities
     const context=directContext(current,proposal.action,proposal.subject);
     if(proposal.inputs&&!isDeepStrictEqual(proposal.inputs,context.inputs))fail("Proposal exact inputs changed");
     const prompt=await resolvePrompt(current.pkg,context.action.prompt_ref);if(!prompt.prompt||prompt.diagnostics.length)fail("Package prompt unavailable");
+    // Cheap authored-schema refusal precedes historical, authority and receipt checks; publication still validates the final data.
+    const candidates=outputData(context,proposal,prompt.prompt.skills.map(s=>s.reference));
+    const schemaDiagnostics=candidates.flatMap((d,index)=>{const resolved=resolveType(context.pkg,d.type);return resolved.ok?payloadSchemaDiagnostics(authorablePayloadSchema(resolved.type),d.payload,`outputs[${index}].payload`):resolved.diagnostics;});
+    if(schemaDiagnostics.length)fail(JSON.stringify(schemaDiagnostics));
     if (proposal.evidence?.historicalResult !== undefined && (context.action.capability !== "independent-result" || typeof proposal.evidence.historicalResult !== "string" || proposal.evidence.receipt !== undefined)) fail("Historical applicability requires independent-result evidence.historicalResult alone");
     for (const product of context.data.filter(d => d.type === independentBinding(context.pkg)?.implementation_type && [context.subject, ...Object.values(context.inputs).flat()].includes(d.revision_id))) {
       if (["review", "acceptance"].includes(context.action.capability)) await validateCurrentHistoricalResults(context, product);
     }
     const authority=await validateDirectAuthority(context,proposal,source);
-    const candidates=outputData(context,proposal,prompt.prompt.skills.map(s=>s.reference));
     const finalized=await finalizeDirectDomain({...context,proposal,outputs:candidates});
     if((["verification-result","independent-result"].includes(context.action.capability) || (context.action.capability === "observation" && !independentBinding(context.pkg)))){
       if(finalized.outputs.length!==1)fail("Evidence assessment publishes one result");
@@ -296,7 +299,7 @@ export function executionBinding(current:Pick<State,"pkg"|"package"|"data">,impl
   const context=implementation.links.filter(l=>l.type===link);if(context.length!==1)fail("Execution needs one exact requirements/experiment context");
   const p=implementation.payload;return {operation,package:current.package,inputs:[{name:exploratory?"trial":"implementation",revisions:[implementation.revision_id]},{name:exploratory?"experiment":"requirements",revisions:[context[0]!.target]}],repositoryPath:p.repository_path as string,sourceCommit:p.source_commit as string,image:p.verification_image as string,command:p.verification_command as string[],scriptPath:p.verification_script as string,...(p.acceptance_scope === "partial" ? {formalFiles:p.formal_files as string[]} : {})};
 }
-async function receiptFor(current:State,locator:string,implementation:DatumEnvelope,activity?:string){if(!/^git-blob:[a-f0-9]{40}$/.test(locator))fail("Evidence requires an exact receipt blob");const saved=await readVerificationReceiptBlob(current.root,locator.slice(9));const b=saved.receipt.binding;checkOperation(b.operation);const registered=await git(current.root,["rev-parse","--verify",`${verificationRef(b)}/attempt-${saved.receipt.attempt}-receipt`]);if(registered!==saved.oid)fail("Receipt is not registered to the original operation");return validateVerificationReceipt(executionBinding(current,implementation,b.operation,activity??b.independentVerification?.activityRevision),saved);}
+async function receiptFor(current:State,locator:string,implementation:DatumEnvelope,activity?:string){if(!/^git-blob:[a-f0-9]{40}$/.test(locator))fail("Evidence requires an exact receipt blob");const saved=await readVerificationReceiptBlob(current.root,locator.slice(9));const b=saved.receipt.binding;checkOperation(b.operation);const registered=await git(current.root,["rev-parse","--verify",`${verificationRef(b)}/attempt-${saved.receipt.attempt}-receipt`]);if(registered!==saved.oid)fail("Receipt is not registered to the original operation");const expected=executionBinding(current,implementation,b.operation,activity??b.independentVerification?.activityRevision);const verified=await validateVerificationReceipt(expected,saved);await requireCoherentVerificationResult(expected,saved.receipt.result!);return verified;}
 async function availableReceipts(current:State,implementation:DatumEnvelope){const refs=await git(current.root,["for-each-ref","--format=%(objectname)","refs/mdlm/execution"]);const results:string[]=[];for(const oid of new Set(refs.split("\n").filter(Boolean))){try{await receiptFor(current,`git-blob:${oid}`,implementation);results.push(`git-blob:${oid}`);}catch{}}return results;}
 export async function runDirectExecution(root:string,subject:string,operation:string,activity?:string){checkOperation(operation);return withRepositoryLock(root,lock,async()=>{const current=await directState(root);const implementation=current.data.find(d=>d.revision_id===subject);if(!implementation||!Object.values(current.pkg.actions).some(a=>["implementation","prototype"].includes(a.capability)&&a.types.includes(implementation.type)))fail("Unknown exact execution subject or unsupported type");const saved=await runVerificationReceipt(root,executionBinding(current,implementation,operation,activity),false);return{ok:true,contract:"mdlm-execution-result@1",operation,value:{...saved,evidence:`git-blob:${saved.oid}`}};});}
 export async function inspectDirectExecution(root:string,operation:string){checkOperation(operation);const current=await directState(root);const oid=await git(root,["rev-parse","--verify","--quiet",`refs/mdlm/execution/${operation}/latest`]).catch(e=>{if(e.code===1)return undefined;throw e;});if(!oid)return{ok:true,contract:"mdlm-execution-result@1",operation,value:{state:"not-started"}};const saved=await readVerificationReceiptBlob(root,oid);if(saved.receipt.binding.operation!==operation||!isDeepStrictEqual(saved.receipt.binding.package,current.package))fail("Execution settlement binding changed");return{ok:true,contract:"mdlm-execution-result@1",operation,value:{...saved,...(saved.receipt.state==="completed"?{evidence:`git-blob:${oid}`}:{})}};}
