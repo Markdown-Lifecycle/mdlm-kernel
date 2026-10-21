@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -32,6 +32,32 @@ export async function readVerificationReceiptBlob(root: string, oid: string) {
   // Every credit path reads receipts here; a stored dry-run result is never evidence.
   if (receipt?.contract === DRY_RUN_CONTRACT) throw new Error("Dry-run results are non-credit readiness checks and cannot be used as execution evidence");
   return {oid, receipt};
+}
+/** Read many blobs' bytes with one Git process. Missing or non-blob objects are omitted; callers parse in their own order. */
+export async function readGitBlobs(root: string, oids: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(oids)];
+  const blobs = new Map<string, string>();
+  if (!unique.length) return blobs;
+  const output = await new Promise<Buffer>((resolve, reject) => {
+    const child = spawn("git", ["-C", root, "cat-file", "--batch"], {env: repositoryGitEnvironment(), stdio: ["pipe", "pipe", "pipe"]});
+    const chunks: Buffer[] = [], errors: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+    child.on("error", reject);
+    child.on("close", code => code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`git cat-file failed: ${Buffer.concat(errors).toString("utf8").trim()}`)));
+    child.stdin.end(unique.map(oid => `${oid}\n`).join(""));
+  });
+  let offset = 0;
+  for (const oid of unique) {
+    const end = output.indexOf(10, offset);
+    const header = output.subarray(offset, end).toString("utf8").split(" ");
+    offset = end + 1;
+    if (header.length !== 3) continue;
+    const size = Number(header[2]);
+    if (header[0] === oid && header[1] === "blob") blobs.set(oid, output.subarray(offset, offset + size).toString("utf8"));
+    offset += size + 1;
+  }
+  return blobs;
 }
 export async function readBoundVerificationReceipt(root: string, binding: VerificationBinding) {
   const oid = await git(root, ["rev-parse", "--verify", "--quiet", `${verificationRef(binding)}/latest`]).catch(error => { if (error.code === 1) return undefined; throw error; });
