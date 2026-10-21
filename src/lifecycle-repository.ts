@@ -184,6 +184,12 @@ function schemaDiagnostics(
   });
 }
 
+/** Check one payload against an exact schema without lifecycle context. */
+export function payloadSchemaDiagnostics(schema: Record<string, unknown>, payload: unknown, pathPrefix: string): ProcessDiagnostic[] {
+  const validate = validator(schema);
+  return validate(payload) ? [] : schemaDiagnostics(validate.errors, pathPrefix, "datum-payload");
+}
+
 export function renderLifecycleDatum(datum: DatumEnvelope): string {
   const { body, ...frontmatter } = datum;
   return `---\n${stringify(frontmatter).trimEnd()}\n---\n${body}`;

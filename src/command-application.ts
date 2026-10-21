@@ -11,6 +11,7 @@ import { requirementTraceBinding } from "./requirement-trace.js";
 import { inspectRequirementTrace } from "./requirement-trace-inspection.js";
 import { independentBinding, verificationStatus } from "./independent-verification.js";
 import { renderMaintenanceView } from "./maintenance-view.js";
+import { renderExecutionDryRun, runExecutionDryRun } from "./execution-dry-run.js";
 import { loadProcessPackage, resolveType, type LifecycleSnapshot, type ProcessDiagnostic } from "./index.js";
 import { evaluateProcessDefinition, evaluateProcessExpression, type ProcessDirectEvaluation } from "./evaluator.js";
 import { processCapabilities, processInspection } from "./process-package-inspection.js";
@@ -45,6 +46,7 @@ Direct lifecycle work:
   mdlm verification context <exact-RQS-or-EXP> [--output <file>] [--json]
   mdlm verification status <exact-product-or-selection> [--json]
   mdlm execution run <exact-subject> <operation-id> [--activity <exact-activity>] [--json]
+  mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>] [--json]
   mdlm execution settlement <operation-id> [--json]
   mdlm execution export <operation-id> <new-directory> [--json]
   mdlm review context <action> [<exact-subject>] [--output <file> [--format shared-verifier-trees]] [--json]
@@ -661,6 +663,7 @@ function renderCommandResult(result: CommandResult): string {
   if (result.command === "version") return `mdlm ${result.version}`;
   if (result.command === "release-notes") return String(result.notes);
   if (result.command === "trace" && typeof result.summary === "string") return result.summary;
+  if (result.command === "execution.dry-run") return renderExecutionDryRun(result as unknown as Parameters<typeof renderExecutionDryRun>[0]);
   if (result.command === "verification.status" && Array.isArray(result.requirements)) {
     return ["Requirement | Coverage | Execution | Currentness | Result | Next action", ...result.requirements.map((r: any) => `${r.requirement} | ${r.coverage} | ${r.execution} | ${r.currentness} | ${r.overall} | ${r.nextAction}`), `Complete: ${result.complete ? "yes" : "no"}`].join("\n");
   }
@@ -793,6 +796,13 @@ async function dispatchCommand(
   }
   if (operands[0] === "execution") {
     try {
+      if (operands[1] === "dry-run") {
+        const dryRunOperands = operands.filter((argument, index) => argument !== "--all" && argument !== "--source" && operands[index - 1] !== "--source");
+        const source = optionValues(arguments_, "--source");
+        const activities = optionValues(arguments_, "--activity");
+        if (dryRunOperands.length !== 3 || source.length > 1 || arguments_.filter(argument => argument === "--activity").length !== activities.length || (arguments_.includes("--source") && !source.length) || [...source, ...activities].some(value => !value || value.startsWith("--"))) throw new Error("Expected execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>]");
+        return {...await runExecutionDryRun(repositoryRoot, dryRunOperands[2]!, {activities, all: arguments_.includes("--all"), source: source[0]}), command: "execution.dry-run", diagnostics: []};
+      }
       if (operands[1] === "run" && operands.length === 4) return {...await runDirectExecution(repositoryRoot, operands[2]!, operands[3]!, optionValue(arguments_, "--activity")), command: "execution.run", diagnostics: []};
       if (operands[1] === "export" && operands.length === 4) return {...await exportDirectExecution(repositoryRoot, operands[2]!, path.resolve(repositoryRoot,operands[3]!)),command:"execution.export",diagnostics:[]};
       if (operands[1] === "settlement" && operands.length === 3) return {...await inspectDirectExecution(repositoryRoot, operands[2]!), command: "execution.settlement", diagnostics: []};

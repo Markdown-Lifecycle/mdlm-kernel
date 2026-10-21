@@ -125,6 +125,9 @@ test("explicit historical RES applicability preserves execution and requires cur
     const revise = (d: typeof current, n: number) => ({...structuredClone(d), revision: n, revision_id: d.revision_id.replace(/r\d+$/, `r${String(n).padStart(5, "0")}`)});
     const later = revise(current, current.revision + 1);
     await expect(historicalApplicability({...state, data: [...state.data, later]}, later, xId, x.result)).resolves.toMatchObject({provenance: {original_result: x.result, original_implementation: priorId}});
+    // An added descriptive note is not a product change.
+    const noted = {...later, body: `${later.body}\nDescriptive note added after the original execution.`};
+    await expect(historicalApplicability({...state, data: [...state.data, noted]}, noted, xId, x.result)).resolves.toMatchObject({provenance: {original_result: x.result}});
     const recorded = {...structuredClone(datum(applied)), revision_id: "RES-000000000000-r00001", id: "RES-000000000000", links: [...datum(applied).links, {type: "supersedes", target: applied}]}; delete recorded.payload.historical_observation;
     await expect(historicalApplicability({...state, data: [...state.data, recorded, later]}, later, xId, x.result)).rejects.toThrow("later result");
     const reverted = revise(changed, current.revision + 1), restored = revise(current, current.revision + 2);

@@ -1,0 +1,267 @@
+{
+  "contract": "mdlm-digest-vectors@1",
+  "note": "Inputs and expected digests from the current kernel; docs/contracts/digests.md explains each preimage. A changed expected value is a compatibility change, not a fixture update.",
+  "package": [
+    {
+      "name": "files sorted by relative path",
+      "files": [
+        {
+          "path": "manifest.yaml",
+          "content": "kind: process-package\nid: demo\n"
+        },
+        {
+          "path": "actions/frame.yaml",
+          "content": "kind: action-definition\nid: frame\nversion: 1\n"
+        }
+      ],
+      "preimage": "actions/frame.yaml\u000045\u0000kind: action-definition\nid: frame\nversion: 1\nmanifest.yaml\u000031\u0000kind: process-package\nid: demo\n",
+      "digest": "sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be"
+    }
+  ],
+  "snapshot": [
+    {
+      "name": "one datum in stored key order",
+      "input": {
+        "package": {
+          "reference": "demo@1.0.0",
+          "digest": "sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+          "language": "mdlm-expression@1"
+        },
+        "repository": "git-commit:1111111111111111111111111111111111111111",
+        "data": [
+          {
+            "id": "EXP-4F1DF1036A49",
+            "revision": 1,
+            "revision_id": "EXP-4F1DF1036A49-r00001",
+            "type": "EXP",
+            "payload": {
+              "title": "Seat count",
+              "allowance_minutes": 5
+            },
+            "links": [],
+            "created_by": {
+              "transaction": "mdlm-direct-transaction@1",
+              "process_ref": "demo@1.0.0#sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+              "prompt_ref": "prompts/frame.md@1",
+              "loaded_skill_refs": [],
+              "policy_refs": []
+            },
+            "body": "Staff see the seat count.\n"
+          }
+        ]
+      },
+      "preimage": "{\"package\":{\"reference\":\"demo@1.0.0\",\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\"},\"repository\":\"git-commit:1111111111111111111111111111111111111111\",\"data\":[{\"id\":\"EXP-4F1DF1036A49\",\"revision\":1,\"revision_id\":\"EXP-4F1DF1036A49-r00001\",\"type\":\"EXP\",\"payload\":{\"title\":\"Seat count\",\"allowance_minutes\":5},\"links\":[],\"created_by\":{\"transaction\":\"mdlm-direct-transaction@1\",\"process_ref\":\"demo@1.0.0#sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"prompt_ref\":\"prompts/frame.md@1\",\"loaded_skill_refs\":[],\"policy_refs\":[]},\"body\":\"Staff see the seat count.\\n\"}]}",
+      "digest": "sha256:a67894ea549924e933b9990e68400d1575c3a0db7e2b869e8b1eecd18f648cca"
+    },
+    {
+      "name": "same datum with payload keys reordered",
+      "input": {
+        "package": {
+          "reference": "demo@1.0.0",
+          "digest": "sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+          "language": "mdlm-expression@1"
+        },
+        "repository": "git-commit:1111111111111111111111111111111111111111",
+        "data": [
+          {
+            "id": "EXP-4F1DF1036A49",
+            "revision": 1,
+            "revision_id": "EXP-4F1DF1036A49-r00001",
+            "type": "EXP",
+            "payload": {
+              "allowance_minutes": 5,
+              "title": "Seat count"
+            },
+            "links": [],
+            "created_by": {
+              "transaction": "mdlm-direct-transaction@1",
+              "process_ref": "demo@1.0.0#sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+              "prompt_ref": "prompts/frame.md@1",
+              "loaded_skill_refs": [],
+              "policy_refs": []
+            },
+            "body": "Staff see the seat count.\n"
+          }
+        ]
+      },
+      "preimage": "{\"package\":{\"reference\":\"demo@1.0.0\",\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\"},\"repository\":\"git-commit:1111111111111111111111111111111111111111\",\"data\":[{\"id\":\"EXP-4F1DF1036A49\",\"revision\":1,\"revision_id\":\"EXP-4F1DF1036A49-r00001\",\"type\":\"EXP\",\"payload\":{\"allowance_minutes\":5,\"title\":\"Seat count\"},\"links\":[],\"created_by\":{\"transaction\":\"mdlm-direct-transaction@1\",\"process_ref\":\"demo@1.0.0#sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"prompt_ref\":\"prompts/frame.md@1\",\"loaded_skill_refs\":[],\"policy_refs\":[]},\"body\":\"Staff see the seat count.\\n\"}]}",
+      "digest": "sha256:a837fab2610d598eeddbae67231cf9a0489ff611ce75bad2aeee9b09067e75ee"
+    },
+    {
+      "name": "no data",
+      "input": {
+        "package": {
+          "reference": "demo@1.0.0",
+          "digest": "sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+          "language": "mdlm-expression@1"
+        },
+        "repository": "git-commit:1111111111111111111111111111111111111111",
+        "data": []
+      },
+      "preimage": "{\"package\":{\"reference\":\"demo@1.0.0\",\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\"},\"repository\":\"git-commit:1111111111111111111111111111111111111111\",\"data\":[]}",
+      "digest": "sha256:764c16d0412ed8332013a0c9fa1d82ada0471bf603f4d3408ff12547896336cc"
+    }
+  ],
+  "proposal": [
+    {
+      "name": "exact bytes",
+      "bytes": "{\"operation\":\"frame-1\",\"action\":\"frame@1\",\"package\":{\"reference\":\"demo@1.0.0\",\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\"},\"snapshot\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"inputs\":{},\"candidates\":[]}",
+      "digest": "sha256:067e516eb508f1aab8c7a1acbcaf97113160a6a5afc679d50fae0476a59e5ca1"
+    },
+    {
+      "name": "same JSON with a trailing newline",
+      "bytes": "{\"operation\":\"frame-1\",\"action\":\"frame@1\",\"package\":{\"reference\":\"demo@1.0.0\",\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\"},\"snapshot\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"inputs\":{},\"candidates\":[]}\n",
+      "digest": "sha256:1d16d86a5d6d3694c57008d713c0c1259743b5a88654cd99cfaebcba315e9c7e"
+    }
+  ],
+  "transaction": [
+    {
+      "operation": "frame-1",
+      "id": "direct-0e13daeeced75fbfad26d8265b0d826ded004bbfc75276a93cdd6c66e3fd72b8"
+    }
+  ],
+  "reviewContext": [
+    {
+      "name": "review context without ok, command and diagnostics",
+      "input": {
+        "contract": "mdlm-direct-review-context@1",
+        "snapshot": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "package": {
+          "reference": "demo@1.0.0",
+          "digest": "sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+          "language": "mdlm-expression@1"
+        },
+        "action": {
+          "kind": "action-definition",
+          "id": "review",
+          "version": 1,
+          "capability": "review",
+          "types": [
+            "REV"
+          ],
+          "prompt_ref": "prompts/review.md@1",
+          "when": {
+            "source": "true",
+            "contract": {
+              "definitionPath": "/srv/mdlm/lane-a/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when"
+            }
+          }
+        },
+        "inputs": {
+          "subject": [
+            "RQS-0123456789AB-r00001"
+          ]
+        },
+        "records": [],
+        "payloadSchemas": {
+          "REV": {
+            "type": "object"
+          }
+        }
+      },
+      "preimage": "{\"action\":{\"capability\":\"review\",\"id\":\"review\",\"kind\":\"action-definition\",\"prompt_ref\":\"prompts/review.md@1\",\"types\":[\"REV\"],\"version\":1,\"when\":{\"contract\":{\"definitionPath\":\"/srv/mdlm/lane-a/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when\"},\"source\":\"true\"}},\"contract\":\"mdlm-direct-review-context@1\",\"inputs\":{\"subject\":[\"RQS-0123456789AB-r00001\"]},\"package\":{\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\",\"reference\":\"demo@1.0.0\"},\"payloadSchemas\":{\"REV\":{\"type\":\"object\"}},\"records\":[],\"snapshot\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"}",
+      "contextSha256": "5aed2b1156d505a9fa55fc125b62e1c3edc5294c30ed98eeaae3593259e6a0bd"
+    },
+    {
+      "name": "same context with top-level keys reversed",
+      "input": {
+        "payloadSchemas": {
+          "REV": {
+            "type": "object"
+          }
+        },
+        "records": [],
+        "inputs": {
+          "subject": [
+            "RQS-0123456789AB-r00001"
+          ]
+        },
+        "action": {
+          "kind": "action-definition",
+          "id": "review",
+          "version": 1,
+          "capability": "review",
+          "types": [
+            "REV"
+          ],
+          "prompt_ref": "prompts/review.md@1",
+          "when": {
+            "source": "true",
+            "contract": {
+              "definitionPath": "/srv/mdlm/lane-a/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when"
+            }
+          }
+        },
+        "package": {
+          "reference": "demo@1.0.0",
+          "digest": "sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+          "language": "mdlm-expression@1"
+        },
+        "snapshot": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "contract": "mdlm-direct-review-context@1"
+      },
+      "preimage": "{\"action\":{\"capability\":\"review\",\"id\":\"review\",\"kind\":\"action-definition\",\"prompt_ref\":\"prompts/review.md@1\",\"types\":[\"REV\"],\"version\":1,\"when\":{\"contract\":{\"definitionPath\":\"/srv/mdlm/lane-a/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when\"},\"source\":\"true\"}},\"contract\":\"mdlm-direct-review-context@1\",\"inputs\":{\"subject\":[\"RQS-0123456789AB-r00001\"]},\"package\":{\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\",\"reference\":\"demo@1.0.0\"},\"payloadSchemas\":{\"REV\":{\"type\":\"object\"}},\"records\":[],\"snapshot\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"}",
+      "contextSha256": "5aed2b1156d505a9fa55fc125b62e1c3edc5294c30ed98eeaae3593259e6a0bd"
+    },
+    {
+      "name": "same context with the repository at another absolute path",
+      "input": {
+        "contract": "mdlm-direct-review-context@1",
+        "snapshot": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "package": {
+          "reference": "demo@1.0.0",
+          "digest": "sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+          "language": "mdlm-expression@1"
+        },
+        "action": {
+          "kind": "action-definition",
+          "id": "review",
+          "version": 1,
+          "capability": "review",
+          "types": [
+            "REV"
+          ],
+          "prompt_ref": "prompts/review.md@1",
+          "when": {
+            "source": "true",
+            "contract": {
+              "definitionPath": "/srv/mdlm/lane-b/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when"
+            }
+          }
+        },
+        "inputs": {
+          "subject": [
+            "RQS-0123456789AB-r00001"
+          ]
+        },
+        "records": [],
+        "payloadSchemas": {
+          "REV": {
+            "type": "object"
+          }
+        }
+      },
+      "preimage": "{\"action\":{\"capability\":\"review\",\"id\":\"review\",\"kind\":\"action-definition\",\"prompt_ref\":\"prompts/review.md@1\",\"types\":[\"REV\"],\"version\":1,\"when\":{\"contract\":{\"definitionPath\":\"/srv/mdlm/lane-b/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when\"},\"source\":\"true\"}},\"contract\":\"mdlm-direct-review-context@1\",\"inputs\":{\"subject\":[\"RQS-0123456789AB-r00001\"]},\"package\":{\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\",\"reference\":\"demo@1.0.0\"},\"payloadSchemas\":{\"REV\":{\"type\":\"object\"}},\"records\":[],\"snapshot\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"}",
+      "contextSha256": "26f8c41390d2498c8e0156f21db939a9148bdf7a2210de59ade6f5433f489cb1"
+    }
+  ],
+  "reviewBytes": [
+    {
+      "name": "verdict or proposal bytes",
+      "bytes": "{\"candidates\":[]}",
+      "sha256": "1cdacf60b6a3fc50d2cc990d9b8c94ab37ee0fb47d7c36e95146aa695553e887"
+    }
+  ],
+  "registryKey": [
+    {
+      "repositoryRealpath": "/srv/mdlm/lane-a",
+      "operation": "review-1",
+      "file": "75901820ff658ac3658d2e1767fab89a7261e6e0b29aaa9bba91fa72cb6c23d3-review-1.json"
+    },
+    {
+      "repositoryRealpath": "/srv/mdlm/lane-b",
+      "operation": "review-1",
+      "file": "6dec5eb1e2849e2da4b1874f1b39fd05426f06ff3e09a83e0961b8c404fad8a1-review-1.json"
+    }
+  ]
+}
