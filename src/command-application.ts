@@ -6,7 +6,7 @@ import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { parse } from "yaml";
-import { inspectDirectExpectations, draftDirectProposal, parseDirectProposal, submitDirectProposal, inspectDirectSettlement, runDirectExecution, inspectDirectExecution, inspectDirectReview, registerDirectReviewFiles, inspectVerificationContext, inspectVerificationStatus, exportDirectExecution } from "./direct-proposal.js";
+import { inspectDirectExpectations, draftDirectProposal, parseDirectProposal, submitDirectProposal, inspectDirectSettlement, runDirectExecution, inspectDirectExecution, runDirectDeployment, inspectDirectDeployment, inspectDirectReview, registerDirectReviewFiles, inspectVerificationContext, inspectVerificationStatus, exportDirectExecution } from "./direct-proposal.js";
 import { requirementTraceBinding } from "./requirement-trace.js";
 import { inspectRequirementTrace } from "./requirement-trace-inspection.js";
 import { independentBinding, verificationStatus } from "./independent-verification.js";
@@ -49,6 +49,8 @@ Direct lifecycle work:
   mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>] [--json]
   mdlm execution settlement <operation-id> [--json]
   mdlm execution export <operation-id> <new-directory> [--json]
+  mdlm deployment run <exact-product> <operation-id> --stack <slot> --aws-profile apm-<project> [--json]
+  mdlm deployment settlement <operation-id> [--json]
   mdlm review context <action> [<exact-subject>] [--output <file> [--format shared-verifier-trees]] [--json]
   mdlm review expand-context <archive-file> --output <new-file> [--json]
   mdlm review register <proposal-file> <verdict-file> [--json]
@@ -808,6 +810,18 @@ async function dispatchCommand(
       if (operands[1] === "settlement" && operands.length === 3) return {...await inspectDirectExecution(repositoryRoot, operands[2]!), command: "execution.settlement", diagnostics: []};
       throw new Error("Expected execution run <exact-subject> <operation-id> or execution settlement <operation-id>");
     } catch (error) { return {...failure("direct-execution-invalid", String(error)), command: "execution"}; }
+  }
+  if (operands[0] === "deployment") {
+    try {
+      const deploymentOperands = operands.filter((argument, index) => !["--stack", "--aws-profile"].includes(argument) && !["--stack", "--aws-profile"].includes(operands[index - 1]!));
+      if (deploymentOperands[1] === "run" && deploymentOperands.length === 4) {
+        const stack = optionValues(arguments_, "--stack"), awsProfile = optionValues(arguments_, "--aws-profile");
+        if (stack.length !== 1 || awsProfile.length !== 1 || [...stack, ...awsProfile].some(value => !value || value.startsWith("--"))) throw new Error("deployment run requires one --stack <slot> and one --aws-profile apm-<project>");
+        return {...await runDirectDeployment(repositoryRoot, deploymentOperands[2]!, deploymentOperands[3]!, {stack: stack[0]!, awsProfile: awsProfile[0]!}), command: "deployment.run", diagnostics: []};
+      }
+      if (deploymentOperands[1] === "settlement" && deploymentOperands.length === 3 && deploymentOperands.length === operands.length) return {...await inspectDirectDeployment(repositoryRoot, deploymentOperands[2]!), command: "deployment.settlement", diagnostics: []};
+      throw new Error("Expected deployment run <exact-product> <operation-id> --stack <slot> --aws-profile apm-<project> or deployment settlement <operation-id>");
+    } catch (error) { return {...failure("direct-deployment-invalid", String(error)), command: "deployment"}; }
   }
   if (operands[0] === "expectations") {
     try {

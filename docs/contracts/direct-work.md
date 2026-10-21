@@ -13,6 +13,8 @@ CLI:
 - `mdlm execution run <exact-implementation> <operation> --json`
 - `mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <commit>] --json`
 - `mdlm execution settlement <operation> --json`
+- `mdlm deployment run <exact-product> <operation> --stack <slot> --aws-profile apm-<project> --json`
+- `mdlm deployment settlement <operation> --json`
 - `mdlm review context <action> <exact-subject> --json`
 - `mdlm review register <proposal-file> <verdict-file> --json`
 
@@ -201,6 +203,33 @@ selected activity passed), a `summary` count, and per activity its `outcome`,
 short summary. The receipt reader used by every credit path rejects a stored
 dry-run result, so it cannot become execution evidence even when registered
 under an execution ref.
+
+## AWS CDK deployment
+
+A package declaring `aws-cdk-deployment@1` binds its deployment record type
+(`type`), the product type it deploys (`implementation_type`) and one `deployment`
+action (`action`). That action's `fixed_payload` for the record type pins the
+synth image digest, host CDK CLI version, CDK app path, region, APM project, stack
+slots, output allowlist, endpoint output, version probe path and maximum lifetime.
+The record type must manage `outcome`, `receipt`, `stack`, `outputs`, `endpoint`,
+`deployed_version` and `expires_at`.
+
+`mdlm deployment run <exact-product> <operation> --stack <slot> --aws-profile apm-<project> --json`
+runs `cdk synth` for the exact product commit in a disposable `--network none`
+container with no credentials, with `MDLM_PRODUCT_COMMIT` and `MDLM_STACK_NAME`
+set. It then refuses the cloud assembly unless it holds exactly one stack named
+for the slot and only file assets already materialized inside the assembly: no
+symlinks, `executable` sources, Docker image assets, legacy asset metadata, nested
+assemblies or paths outside it. Only then does the host CDK CLI run
+`cdk deploy --app <cdk.out>` with `AWS_PROFILE` set to the operator's APM profile
+and no other inherited AWS variables. A slot that already holds a stack is
+refused. The receipt records the source and synth identities, template and asset
+digests, caller identity ARN, stack ID and last update time, allowlisted outputs,
+the endpoint and the result of `GET <endpoint><probe_path>`, which must contain
+the product commit. Any refusal or mismatch is outcome `error`. The started marker
+is written before anything runs, and an interrupted deployment is never re-run.
+A `deployment` proposal cites the receipt as `evidence.receipt` and links
+`deploys` to the exact product; the kernel fills the managed fields.
 
 ## Native verification runtime
 
