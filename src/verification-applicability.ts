@@ -8,6 +8,7 @@ import type { DirectTransaction } from "./direct-contract.js";
 import { independentBinding, independentExecutionBinding, currentVerificationResults } from "./independent-verification.js";
 import { readGitBlobs, readVerificationReceiptBlob, validateVerificationReceipt, verificationRef, type VerificationBinding } from "./verification-receipt.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
+import { progress } from "./progress.js";
 
 const exec = promisify(execFile);
 type State = {root: string; pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]};
@@ -144,5 +145,7 @@ export async function validateHistoricalResult(state: State, datum: DatumEnvelop
   return {...applicable, stored};
 }
 export async function validateCurrentHistoricalResults(state: State, product: DatumEnvelope) {
-  for (const activity of links(product, "verification")) for (const datum of currentVerificationResults(state, product.revision_id, activity)) if (datum.payload.historical_observation !== undefined) await validateHistoricalResult(state, datum);
+  const historical = links(product, "verification").flatMap(activity => currentVerificationResults(state, product.revision_id, activity)).filter(datum => datum.payload.historical_observation !== undefined);
+  const report = progress("historical results", historical.length);
+  for (const [index, datum] of historical.entries()) { await validateHistoricalResult(state, datum); report(index + 1); }
 }

@@ -13,6 +13,8 @@ import { authorablePayloadSchema, sourceAssessmentTargets } from "./direct-guida
 
 import { independentBinding, independentExecutionBinding, verificationStatus, type VerificationCase } from "./independent-verification.js";
 
+import { reviewCheckpoints } from "./review-checkpoint.js";
+import { progress } from "./progress.js";
 import { datumPublications, validateHistoricalResult, type HistoricalObservation } from "./verification-applicability.js";
 
 const exec = promisify(execFile);
@@ -190,12 +192,14 @@ export async function buildDirectReviewContext(context: DirectContext): Promise<
     const activities = data.filter(d => d.type === independent.type && (selectedIds.has(d.revision_id) || selected.some(s => s.links.some(l => l.type === "verification" && l.target === d.revision_id))));
     // Activities often share one verifier commit; read each exact tree once.
     const trees = new Map<string, Promise<NonNullable<DirectReviewContext["verifierSources"]>[number]["files"]>>();
-    for (const activity of activities) {
+    const report = progress("verifier sources", activities.length);
+    for (const [index, activity] of activities.entries()) {
       const cwd = String(activity.payload.repository_path), commit = String(activity.payload.source_commit);
       if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("Verifier source needs an exact commit");
       const key = `${cwd}\0${commit}`;
       if (!trees.has(key)) trees.set(key, verifierFiles(cwd, commit));
       const files = await trees.get(key)!;
+      report(index + 1);
       result.verifierSources.push({activity:activity.revision_id,sourceCommit:commit,files});
       // Activity source review selects only its declared intent and interfaces, never product source.
       for (const link of activity.links) if (["verifies","uses-interface"].includes(link.type) && !result.records.some(d=>d.revision_id===link.target)) result.records.push(data.find(d=>d.revision_id===link.target)!);
@@ -249,7 +253,9 @@ export async function buildDirectReviewContext(context: DirectContext): Promise<
     result.sources.push(await reviewSource(implementation));
   }
   const results = selected.filter(datum => datum.type === trace.result_type);
-  for (const datum of results) {
+  // Each validated result is checkpointed for this exact snapshot, so an interrupted export or registration resumes.
+  type ValidatedResult = {origins: string[]; receipt: DirectReviewContext["verificationReceipts"][number]};
+  const validate = async (datum: DatumEnvelope): Promise<ValidatedResult> => {
     const locator = typeof datum.payload.receipt === "string" && /^git-blob:([a-f0-9]{40})$/.exec(datum.payload.receipt);
     if (!locator) throw new Error(`Result '${datum.revision_id}' has no exact verification receipt`);
     const saved = await readVerificationReceiptBlob(root, locator[1]!);
@@ -261,9 +267,7 @@ export async function buildDirectReviewContext(context: DirectContext): Promise<
     if (!implementation || !requirements || !isDeepStrictEqual(transaction.package, context.package)) throw new Error("Verification result does not bind the selected implementation, requirements and package");
     if (datum.payload.historical_observation !== undefined) {
       const historical = await validateHistoricalResult(context, datum);
-      for (const origin of [historical.original, historical.prior]) if (!result.records.some(d => d.revision_id === origin.revision_id)) result.records.push(origin);
-      result.verificationReceipts.push({result: datum.revision_id, implementation: implementation.revision_id, requirements: requirements.revision_id, locator: datum.payload.receipt as string, execution: transaction.id, binding: "validated", historicalObservation: historical.stored, receipt: historical.verified.saved.receipt});
-      continue;
+      return {origins: [historical.original.revision_id, historical.prior.revision_id], receipt: {result: datum.revision_id, implementation: implementation.revision_id, requirements: requirements.revision_id, locator: datum.payload.receipt as string, execution: transaction.id, binding: "validated", historicalObservation: historical.stored, receipt: historical.verified.saved.receipt}};
     }
     const binding = saved.receipt.binding;
     if (!binding.operation || !/^[a-zA-Z0-9-]{1,80}$/.test(binding.operation) || !Number.isInteger(saved.receipt.attempt) || saved.receipt.attempt < 1) throw new Error("Review requires a direct execution receipt");
@@ -277,7 +281,18 @@ export async function buildDirectReviewContext(context: DirectContext): Promise<
     const verified = await validateVerificationReceipt(expected, saved);
     const registered = (await exec("git", ["-C", root, "rev-parse", "--verify", `${verificationRef(binding)}/attempt-${saved.receipt.attempt}-receipt`], {env: repositoryGitEnvironment()})).stdout.trim();
     if (registered !== saved.oid || verified.outcome !== datum.payload.outcome) throw new Error("Result conflicts with its registered execution receipt");
-    result.verificationReceipts.push({result: datum.revision_id, implementation: implementation.revision_id, requirements: requirements.revision_id, locator: datum.payload.receipt as string, execution: transaction.id, binding: "validated", receipt: saved.receipt});
+    return {origins: [], receipt: {result: datum.revision_id, implementation: implementation.revision_id, requirements: requirements.revision_id, locator: datum.payload.receipt as string, execution: transaction.id, binding: "validated", receipt: saved.receipt}};
+  };
+  const resultKey = (datum: DatumEnvelope) => `${context.action.id}@${context.action.version}\0${context.subject ?? ""}\0${datum.revision_id}`;
+  const checkpoints = results.length ? await reviewCheckpoints(root, context.snapshot) : undefined;
+  const checkpointed = await Promise.all(results.map(datum => checkpoints!.read<ValidatedResult>("result", resultKey(datum))));
+  const report = progress("verification results", results.length, checkpointed.filter(Boolean).length);
+  for (const [index, datum] of results.entries()) {
+    let validated = checkpointed[index];
+    if (!validated) { validated = await validate(datum); await checkpoints!.write("result", resultKey(datum), validated); }
+    for (const id of validated.origins) if (!result.records.some(d => d.revision_id === id)) result.records.push(data.find(d => d.revision_id === id)!);
+    result.verificationReceipts.push(validated.receipt);
+    report(index + 1);
   }
   if (context.action.capability === "review") {
     const product = implementations.find(datum => datum.revision_id === context.subject);
