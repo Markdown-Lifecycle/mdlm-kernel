@@ -57,9 +57,9 @@ export interface CommandResult {
 
 // Docker control messages are never substituted for the verification script's
 // streams. This helper also bounds a script that hangs or emits endless output.
-export function execute(file: string, args: string[], timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<CommandResult> {
+export function execute(file: string, args: string[], timeoutMs: number, options: {env?: NodeJS.ProcessEnv; cwd?: string} = {}): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"], ...(env ? {env} : {}) });
+    const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"], ...options });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let size = 0;

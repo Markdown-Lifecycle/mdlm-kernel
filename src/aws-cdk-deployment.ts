@@ -126,11 +126,12 @@ export function deploymentRunBinding(state: {pkg: ProcessPackage; package: unkno
     repositoryPath: String(product.payload.repository_path), sourceCommit: String(product.payload.source_commit), config, stack: options.stack, awsProfile: options.awsProfile};
 }
 
-/** Host commands see only the profile name, never inherited key material or another profile. */
-function hostEnvironment(binding: DeploymentBinding): NodeJS.ProcessEnv {
+/** Host commands see only the profile name, never inherited key material or another profile.
+ * They run in an empty directory, so no project cdk.json (or its plugins) is ever loaded. */
+function hostOptions(binding: DeploymentBinding, cwd: string): {env: NodeJS.ProcessEnv; cwd: string} {
   const env: NodeJS.ProcessEnv = {PATH: process.env.PATH ?? "", AWS_PROFILE: binding.awsProfile, AWS_REGION: binding.config.region, AWS_DEFAULT_REGION: binding.config.region, CDK_DISABLE_VERSION_CHECK: "1"};
   for (const name of ["HOME", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"]) if (process.env[name]) env[name] = process.env[name];
-  return env;
+  return {env, cwd};
 }
 
 function hostFailure(label: string, result: {exitCode: number | null; problem?: string; stderr: Buffer}): string {
@@ -199,6 +200,8 @@ export async function validateCloudAssembly(assembly: string, expected: {stack: 
   const json = async (file: string) => { try { return JSON.parse(await fs.readFile(path.join(assembly, file), "utf8")) as unknown; } catch { return refuse(`${file} is not readable JSON`); } };
   const fileDigest = (name: string) => fs.readFile(path.join(assembly, name)).then(sha256);
   if (!files.includes("manifest.json")) refuse("manifest.json is missing");
+  // The asset publisher reuses .cache/<asset-id>.zip, so a synth-written cache could upload bytes other than the validated source.
+  if (files.some(name => name === ".cache" || name.startsWith(".cache/"))) refuse("a pre-built asset publisher cache (.cache) is present");
   const manifest = await json("manifest.json");
   if (!object(manifest) || !object(manifest.artifacts)) refuse("manifest.json has no artifacts");
   const stacks: [string, Record<string, any>][] = [], assets: NonNullable<DeploymentResult["assembly"]>["assets"] = [];
@@ -217,6 +220,7 @@ export async function validateCloudAssembly(assembly: string, expected: {stack: 
       const m = assetManifest as Record<string, any>;
       if (object(m.dockerImages) && Object.keys(m.dockerImages).length) refuse(`asset manifest '${file}' declares Docker image assets`);
       for (const [assetId, asset] of Object.entries(object(m.files) ? m.files as Record<string, any> : {})) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(assetId)) refuse(`file asset ID '${assetId}' is not a plain identifier`);
         const source = object(asset) ? asset.source : undefined;
         if (!object(source)) refuse(`file asset '${assetId}' has no source`);
         if (source.executable !== undefined) refuse(`file asset '${assetId}' declares an executable source`);
@@ -246,8 +250,8 @@ export async function validateCloudAssembly(assembly: string, expected: {stack: 
   return {templateSha256: await fileDigest(template), assets: assets.sort((a, b) => a.id.localeCompare(b.id))};
 }
 
-async function describeStack(binding: DeploymentBinding): Promise<Record<string, any> | undefined> {
-  const described = await execute("aws", ["cloudformation", "describe-stacks", "--stack-name", binding.stack, "--region", binding.config.region, "--output", "json"], 60_000, hostEnvironment(binding));
+async function describeStack(binding: DeploymentBinding, host: {env: NodeJS.ProcessEnv; cwd: string}): Promise<Record<string, any> | undefined> {
+  const described = await execute("aws", ["cloudformation", "describe-stacks", "--stack-name", binding.stack, "--region", binding.config.region, "--output", "json"], 60_000, host);
   if (described.exitCode !== 0 && !described.problem && /does not exist/.test(described.stderr.toString("utf8"))) return undefined;
   if (described.problem || described.exitCode !== 0) throw new Error(hostFailure("aws cloudformation describe-stacks", described));
   const stack = (JSON.parse(described.stdout.toString("utf8")) as {Stacks?: Record<string, any>[]}).Stacks?.[0];
@@ -258,8 +262,9 @@ async function probe(url: string, expected: string): Promise<NonNullable<Deploym
   const base = {url, expectedVersion: expected};
   try {
     const response = await fetch(url, {redirect: "manual", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)});
-    const body = Buffer.from(await response.arrayBuffer());
-    return {...base, status: response.status, matched: response.ok && body.toString("utf8").includes(expected), bodyBase64: body.subarray(0, PROBE_BODY_LIMIT).toString("base64")};
+    // Match only on the recorded bytes, so publication can recompute the same answer.
+    const body = Buffer.from(await response.arrayBuffer()).subarray(0, PROBE_BODY_LIMIT);
+    return {...base, status: response.status, matched: response.ok && body.toString("utf8").includes(expected), bodyBase64: body.toString("base64")};
   } catch {
     return {...base, status: null, matched: false, bodyBase64: ""};
   }
@@ -269,10 +274,11 @@ async function probe(url: string, expected: string): Promise<NonNullable<Deploym
 export async function executeDeployment(binding: DeploymentBinding): Promise<DeploymentResult> {
   const result: DeploymentResult = {outcome: "error", phase: "source", deployAttempted: false, startedAt: new Date().toISOString(), finishedAt: ""};
   const directory = await fs.mkdtemp(path.join(tmpdir(), "mdlm-deployment-"));
-  const env = hostEnvironment(binding);
+  const host = hostOptions(binding, path.join(directory, "host"));
   try {
+    await fs.mkdir(host.cwd);
     const source = await authenticateProductSource(binding);
-    const version = await execute("cdk", ["--version"], 60_000, env);
+    const version = await execute("cdk", ["--version"], 60_000, host);
     if (version.problem || version.exitCode !== 0) throw new Error(hostFailure("Host cdk --version", version));
     const hostCdkVersion = version.stdout.toString("utf8").trim().split(/\s+/)[0] ?? "";
     if (hostCdkVersion !== binding.config.cdk_cli_version) throw new Error(`Host CDK CLI ${hostCdkVersion || "(unknown)"} differs from the package's pinned ${binding.config.cdk_cli_version}`);
@@ -284,22 +290,22 @@ export async function executeDeployment(binding: DeploymentBinding): Promise<Dep
     result.assembly = await validateCloudAssembly(assembly, {stack: binding.stack, region: binding.config.region});
 
     result.phase = "access";
-    const identity = await execute("aws", ["sts", "get-caller-identity", "--output", "json"], 60_000, env);
+    const identity = await execute("aws", ["sts", "get-caller-identity", "--output", "json"], 60_000, host);
     if (identity.problem || identity.exitCode !== 0) throw new Error(hostFailure("aws sts get-caller-identity", identity));
     const caller = JSON.parse(identity.stdout.toString("utf8")) as {Account?: string; Arn?: string};
     if (!/^\d{12}$/.test(String(caller.Account)) || !nonEmpty(caller.Arn)) throw new Error("aws sts get-caller-identity returned no account and caller ARN");
     result.access = {apmProject: binding.config.apm_project, callerArn: caller.Arn, account: caller.Account!};
-    const existing = await describeStack(binding);
+    const existing = await describeStack(binding, host);
     if (existing) throw new Error(`Stack slot '${binding.stack}' already holds stack ${String(existing.StackId)} (${String(existing.StackStatus)}); tear it down before deploying`);
 
     result.phase = "deploy";
     result.deployAttempted = true;
-    const deployed = await execute("cdk", ["deploy", "--app", assembly, "--require-approval", "never", "--ci", "--no-notices", binding.stack], HOST_TIMEOUT_MS, env);
+    const deployed = await execute("cdk", ["deploy", "--app", assembly, "--require-approval", "never", "--ci", "--no-notices", binding.stack], HOST_TIMEOUT_MS, host);
     result.deploy = {exitCode: deployed.exitCode, stdoutBase64: deployed.stdout.toString("base64"), stderrBase64: deployed.stderr.toString("base64")};
     if (deployed.problem || deployed.exitCode !== 0) throw new Error(hostFailure("cdk deploy", deployed));
 
     result.phase = "stack";
-    const stack = await describeStack(binding);
+    const stack = await describeStack(binding, host);
     if (!stack || !/_COMPLETE$/.test(String(stack.StackStatus)) || /ROLLBACK|DELETE/.test(String(stack.StackStatus))) throw new Error(`Stack '${binding.stack}' is not deployed after cdk deploy (${String(stack?.StackStatus ?? "absent")})`);
     const account = /^arn:aws[a-z-]*:cloudformation:[^:]+:(\d{12}):/.exec(String(stack.StackId))?.[1];
     if (account !== result.access.account) throw new Error("Deployed stack account differs from the caller identity");
@@ -375,6 +381,30 @@ export async function inspectDeployment(root: string, operation: string) {
   return saved ? {...saved, ...(saved.receipt.state === "completed" ? {evidence: `git-blob:${saved.oid}`} : {})} : {state: "not-started"};
 }
 
+/** Every value copied into a deployment record must follow from the receipt's own facts; stored summaries are not trusted. */
+export async function requireCoherentDeployment(binding: DeploymentBinding, result: DeploymentResult) {
+  const refuse = (field: string): never => { throw new Error(`Deployment receipt ${field} contradicts its ${result.outcome} outcome`); };
+  if (!["pass", "error"].includes(result.outcome)) refuse("outcome");
+  const {stack, outputs, endpoint, probe, access} = result;
+  if (stack !== undefined) {
+    if (!object(stack) || !access || stack.account !== access.account || stack.region !== binding.config.region || stack.name !== binding.stack
+      || !stack.id.startsWith(`arn:aws:cloudformation:${binding.config.region}:${stack.account}:stack/${binding.stack}/`) || !nonEmpty(stack.lastUpdatedTime)) refuse("stack");
+  }
+  if (outputs !== undefined && (!object(outputs) || Object.entries(outputs).some(([name, value]) => !binding.config.output_allowlist.includes(name) || typeof value !== "string"))) refuse("outputs");
+  if (endpoint !== undefined && (!stack || outputs?.[binding.config.endpoint_output] !== endpoint)) refuse("endpoint");
+  if (result.expiresAt !== undefined && (!stack || Number.isNaN(Date.parse(result.expiresAt)))) refuse("expiresAt");
+  if (result.deployedVersion !== undefined && result.deployedVersion !== binding.sourceCommit) refuse("deployedVersion");
+  if (result.outcome !== "pass") return;
+  const source = await authenticateProductSource(binding);
+  if (result.phase !== "probe" || !result.deployAttempted || result.deploy?.exitCode !== 0 || result.source?.commit !== source.sourceCommit || result.source.tree !== source.sourceTree) refuse("source or deploy");
+  if (!stack || !endpoint || !result.expiresAt) refuse("stack");
+  // The match is recomputed from the recorded response, never taken from the stored flag.
+  const body = Buffer.from(String(probe?.bodyBase64 ?? ""), "base64").toString("utf8");
+  if (!probe || probe.url !== `${endpoint!.replace(/\/+$/, "")}${binding.config.probe_path}` || probe.expectedVersion !== binding.sourceCommit
+    || typeof probe.status !== "number" || probe.status < 200 || probe.status > 299 || !body.includes(binding.sourceCommit) || probe.matched !== true) refuse("probe");
+  if (result.deployedVersion !== binding.sourceCommit) refuse("deployedVersion");
+}
+
 /** Authenticate a cited receipt against the current exact product and package-fixed configuration. */
 export async function validateDeploymentReceipt(root: string, state: {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]}, locator: string, product: string) {
   if (!/^git-blob:[a-f0-9]{40}$/.test(locator)) throw new Error("Deployment evidence requires an exact receipt blob");
@@ -385,10 +415,7 @@ export async function validateDeploymentReceipt(root: string, state: {pkg: Proce
   if (registered !== saved.oid || saved.receipt.state !== "completed" || !result) throw new Error("A completed deployment receipt registered to its operation is required");
   const expected = deploymentRunBinding(state, product, binding.operation, {stack: binding.stack, awsProfile: binding.awsProfile});
   if (!isDeepStrictEqual(expected, binding)) throw new Error("Deployment receipt does not match this exact product, package and deployment configuration");
-  if (result.outcome === "pass") {
-    const source = await authenticateProductSource(binding);
-    if (result.source?.commit !== source.sourceCommit || result.source.tree !== source.sourceTree || result.deployedVersion !== binding.sourceCommit || !result.probe?.matched || !result.stack || !result.endpoint) throw new Error("Deployment receipt contradicts its pass outcome");
-  }
+  await requireCoherentDeployment(binding, result);
   return {saved, managed: {
     outcome: result.outcome, receipt: locator,
     ...(result.stack ? {stack: {account: result.stack.account, region: result.stack.region, name: result.stack.name, id: result.stack.id, last_updated_time: result.stack.lastUpdatedTime}} : {}),
