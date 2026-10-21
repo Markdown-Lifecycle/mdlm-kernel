@@ -48,7 +48,7 @@ export interface DockerVerificationResult {
   rawReportBase64?: string;
 }
 
-interface CommandResult {
+export interface CommandResult {
   stdout: Buffer;
   stderr: Buffer;
   exitCode: number | null;
@@ -57,9 +57,9 @@ interface CommandResult {
 
 // Docker control messages are never substituted for the verification script's
 // streams. This helper also bounds a script that hangs or emits endless output.
-function execute(file: string, args: string[], timeoutMs: number): Promise<CommandResult> {
+export function execute(file: string, args: string[], timeoutMs: number, options: {env?: NodeJS.ProcessEnv; cwd?: string} = {}): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"], ...options });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let size = 0;
@@ -86,7 +86,7 @@ function execute(file: string, args: string[], timeoutMs: number): Promise<Comma
   });
 }
 
-async function checked(file: string, args: string[], timeoutMs = 30_000): Promise<Buffer> {
+export async function checked(file: string, args: string[], timeoutMs = 30_000): Promise<Buffer> {
   const result = await execute(file, args, timeoutMs);
   if (result.problem || result.exitCode !== 0) {
     throw new Error(result.problem ?? `${file} failed: ${result.stderr.toString("utf8").trim()}`);
@@ -98,7 +98,7 @@ async function checked(file: string, args: string[], timeoutMs = 30_000): Promis
 export const SOURCE_ARCHIVE_LIMIT = 16 * 1024 * 1024;
 
 // Count the whole archive so an oversized source reports its actual size.
-function archiveSource(repositoryPath: string, sourceCommit: string, label: string, timeoutMs = 30_000): Promise<Buffer> {
+export function archiveSource(repositoryPath: string, sourceCommit: string, label: string, timeoutMs = 30_000): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", ["-C", repositoryPath, "archive", "--format=tar", sourceCommit], { stdio: ["ignore", "pipe", "pipe"] });
     const chunks: Buffer[] = [];
