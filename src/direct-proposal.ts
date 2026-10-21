@@ -6,7 +6,7 @@ import { promisify, isDeepStrictEqual } from "node:util";
 import { resolveType, type DatumEnvelope } from "./index.js";
 import type { DirectAction, DirectCandidate, DirectContext, DirectProposal, DirectTransaction, DirectWorkItem, DirectProposalResult } from "./direct-contract.js";
 import { selectedRepositoryPackage } from "./selected-package.js";
-import { readRepositoryData, publishTransactionData, provisionalLifecycleRecord } from "./lifecycle-repository.js";
+import { readRepositoryData, publishTransactionData, provisionalLifecycleRecord, payloadSchemaDiagnostics } from "./lifecycle-repository.js";
 import { withRepositoryLock } from "./repository-lock.js";
 import { resolvePrompt } from "./direct-prompt.js";
 import { evaluateExpressionValue } from "./evaluator.js";
@@ -250,12 +250,15 @@ export async function submitDirectProposal(root:string,source:string,authorities
     const context=directContext(current,proposal.action,proposal.subject);
     if(proposal.inputs&&!isDeepStrictEqual(proposal.inputs,context.inputs))fail("Proposal exact inputs changed");
     const prompt=await resolvePrompt(current.pkg,context.action.prompt_ref);if(!prompt.prompt||prompt.diagnostics.length)fail("Package prompt unavailable");
+    // Cheap authored-schema refusal precedes historical, authority and receipt checks; publication still validates the final data.
+    const candidates=outputData(context,proposal,prompt.prompt.skills.map(s=>s.reference));
+    const schemaDiagnostics=candidates.flatMap((d,index)=>{const resolved=resolveType(context.pkg,d.type);return resolved.ok?payloadSchemaDiagnostics(authorablePayloadSchema(resolved.type),d.payload,`outputs[${index}].payload`):resolved.diagnostics;});
+    if(schemaDiagnostics.length)fail(JSON.stringify(schemaDiagnostics));
     if (proposal.evidence?.historicalResult !== undefined && (context.action.capability !== "independent-result" || typeof proposal.evidence.historicalResult !== "string" || proposal.evidence.receipt !== undefined)) fail("Historical applicability requires independent-result evidence.historicalResult alone");
     for (const product of context.data.filter(d => d.type === independentBinding(context.pkg)?.implementation_type && [context.subject, ...Object.values(context.inputs).flat()].includes(d.revision_id))) {
       if (["review", "acceptance"].includes(context.action.capability)) await validateCurrentHistoricalResults(context, product);
     }
     const authority=await validateDirectAuthority(context,proposal,source);
-    const candidates=outputData(context,proposal,prompt.prompt.skills.map(s=>s.reference));
     const finalized=await finalizeDirectDomain({...context,proposal,outputs:candidates});
     if((["verification-result","independent-result"].includes(context.action.capability) || (context.action.capability === "observation" && !independentBinding(context.pkg)))){
       if(finalized.outputs.length!==1)fail("Evidence assessment publishes one result");

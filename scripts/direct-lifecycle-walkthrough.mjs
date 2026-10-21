@@ -487,7 +487,7 @@ raise SystemExit(0 if all(row['outcome'] == 'pass' for row in rows) else 1)
         for (const [operation, rows, diagnostic] of [
           ['wrong-configuration-role', dispositions.map(row => row.source_scope === configuration.revision_id ? {...row, candidate: {path: '.gitignore', name: configuration.payload.name, role: 'production'}} : row), 'change-source-candidate'],
           ['missing-configuration-target', dispositions.filter(row => row.source_scope !== configuration.revision_id), 'change-source-coverage'],
-          ['unsupported-impact-role', dispositions.map(row => row.source_scope === configuration.revision_id ? {...row, candidate: {path: '.gitignore', name: configuration.payload.name, role: 'unsupported'}} : row), 'change-source-candidate'],
+          ['unsupported-impact-role', dispositions.map(row => row.source_scope === configuration.revision_id ? {...row, candidate: {path: '.gitignore', name: configuration.payload.name, role: 'unsupported'}} : row), '/candidate/role must be equal to one of the allowed values'],
         ]) {
           const rejected = cli(['proposal', 'submit', '-'], {operation, action: g.action, package: g.package, snapshot: g.snapshot, subject: g.subject, inputs: g.inputs, candidates: [{...output, payload: {...output.payload, impact_dispositions: rows}}]}, {expected: 1});
           assert.ok(JSON.stringify(rejected.diagnostics).includes(diagnostic), JSON.stringify(rejected));
