@@ -1,4 +1,5 @@
 import {archiveReviewContext, expandReviewContextArchive} from "./review-context-archive.js";
+import {writeJsonFile} from "./json-stream.js";
 import {previewProcessUpgrade, applyProcessUpgrade, settleProcessUpgrade} from "./process-upgrade.js";
 import { fileURLToPath } from "node:url";
 import { promises as fs } from "node:fs";
@@ -10,6 +11,7 @@ import { requirementTraceBinding } from "./requirement-trace.js";
 import { inspectRequirementTrace } from "./requirement-trace-inspection.js";
 import { independentBinding, verificationStatus } from "./independent-verification.js";
 import { renderMaintenanceView } from "./maintenance-view.js";
+import { renderExecutionDryRun, runExecutionDryRun } from "./execution-dry-run.js";
 import { loadProcessPackage, resolveType, type LifecycleSnapshot, type ProcessDiagnostic } from "./index.js";
 import { evaluateProcessDefinition, evaluateProcessExpression, type ProcessDirectEvaluation } from "./evaluator.js";
 import { processCapabilities, processInspection } from "./process-package-inspection.js";
@@ -44,6 +46,7 @@ Direct lifecycle work:
   mdlm verification context <exact-RQS-or-EXP> [--output <file>] [--json]
   mdlm verification status <exact-product-or-selection> [--json]
   mdlm execution run <exact-subject> <operation-id> [--activity <exact-activity>] [--json]
+  mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>] [--json]
   mdlm execution settlement <operation-id> [--json]
   mdlm execution export <operation-id> <new-directory> [--json]
   mdlm review context <action> [<exact-subject>] [--output <file> [--format shared-verifier-trees]] [--json]
@@ -660,6 +663,7 @@ function renderCommandResult(result: CommandResult): string {
   if (result.command === "version") return `mdlm ${result.version}`;
   if (result.command === "release-notes") return String(result.notes);
   if (result.command === "trace" && typeof result.summary === "string") return result.summary;
+  if (result.command === "execution.dry-run") return renderExecutionDryRun(result as unknown as Parameters<typeof renderExecutionDryRun>[0]);
   if (result.command === "verification.status" && Array.isArray(result.requirements)) {
     return ["Requirement | Coverage | Execution | Currentness | Result | Next action", ...result.requirements.map((r: any) => `${r.requirement} | ${r.coverage} | ${r.execution} | ${r.currentness} | ${r.overall} | ${r.nextAction}`), `Complete: ${result.complete ? "yes" : "no"}`].join("\n");
   }
@@ -786,13 +790,19 @@ async function dispatchCommand(
       const context = {...await inspectVerificationContext(repositoryRoot, operands[2]!), command: "verification.context", diagnostics: []};
       if (!outputOptions.length) return context;
       const file = path.resolve(repositoryRoot, outputOptions[0]!);
-      const bytes = Buffer.from(`${JSON.stringify(context, null, 2)}\n`, "utf8");
-      await fs.writeFile(file, bytes, {flag: "wx"});
-      return {ok:true, command:"verification.context", contract:"mdlm-verification-export@1", export:{path:file,bytes:bytes.length,exportSha256:createHash("sha256").update(bytes).digest("hex")},subject:context.subject,package:context.package,snapshot:context.snapshot,authoringContext:context.authoringContext,diagnostics:[]};
+      const written = await writeJsonFile(file, context, 2);
+      return {ok:true, command:"verification.context", contract:"mdlm-verification-export@1", export:{path:file,bytes:written.bytes,exportSha256:written.sha256},subject:context.subject,package:context.package,snapshot:context.snapshot,authoringContext:context.authoringContext,diagnostics:[]};
     } catch(error) {return {...failure("verification-invalid", String(error)),command:"verification"};}
   }
   if (operands[0] === "execution") {
     try {
+      if (operands[1] === "dry-run") {
+        const dryRunOperands = operands.filter((argument, index) => argument !== "--all" && argument !== "--source" && operands[index - 1] !== "--source");
+        const source = optionValues(arguments_, "--source");
+        const activities = optionValues(arguments_, "--activity");
+        if (dryRunOperands.length !== 3 || source.length > 1 || arguments_.filter(argument => argument === "--activity").length !== activities.length || (arguments_.includes("--source") && !source.length) || [...source, ...activities].some(value => !value || value.startsWith("--"))) throw new Error("Expected execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>]");
+        return {...await runExecutionDryRun(repositoryRoot, dryRunOperands[2]!, {activities, all: arguments_.includes("--all"), source: source[0]}), command: "execution.dry-run", diagnostics: []};
+      }
       if (operands[1] === "run" && operands.length === 4) return {...await runDirectExecution(repositoryRoot, operands[2]!, operands[3]!, optionValue(arguments_, "--activity")), command: "execution.run", diagnostics: []};
       if (operands[1] === "export" && operands.length === 4) return {...await exportDirectExecution(repositoryRoot, operands[2]!, path.resolve(repositoryRoot,operands[3]!)),command:"execution.export",diagnostics:[]};
       if (operands[1] === "settlement" && operands.length === 3) return {...await inspectDirectExecution(repositoryRoot, operands[2]!), command: "execution.settlement", diagnostics: []};
@@ -839,9 +849,8 @@ async function dispatchCommand(
       const archive = JSON.parse(await fs.readFile(path.resolve(repositoryRoot, operands[2]!), "utf8"));
       const context = expandReviewContextArchive(archive);
       const file = path.resolve(repositoryRoot, outputOptions[0]!);
-      const bytes = Buffer.from(`${JSON.stringify(context, null, 2)}\n`, "utf8");
-      await fs.writeFile(file, bytes, {flag: "wx"});
-      return {ok: true, command: "review.expand-context", contract: "mdlm-review-export@1", export: {path: file, bytes: bytes.length, exportSha256: createHash("sha256").update(bytes).digest("hex")}, diagnostics: []};
+      const written = await writeJsonFile(file, context, 2);
+      return {ok: true, command: "review.expand-context", contract: "mdlm-review-export@1", export: {path: file, bytes: written.bytes, exportSha256: written.sha256}, diagnostics: []};
     }
     if (operands[1] === "context" && [3, 4].includes(operands.length)) {
       const context = await inspectDirectReview(repositoryRoot, operands[2]!, operands[3]);
@@ -849,11 +858,10 @@ async function dispatchCommand(
       if (!outputOptions.length) return result;
       const file = path.resolve(repositoryRoot, outputOptions[0]!);
       const saved = formatOptions.length ? archiveReviewContext(result) : result;
-      const bytes = Buffer.from(`${JSON.stringify(saved, null, 2)}\n`, "utf8");
-      await fs.writeFile(file, bytes, {flag: "wx"});
+      const written = await writeJsonFile(file, saved, 2);
       return {
         ok: true, command: "review.context", contract: "mdlm-review-export@1",
-        export: {path: file, bytes: bytes.length, exportSha256: createHash("sha256").update(bytes).digest("hex")},
+        export: {path: file, bytes: written.bytes, exportSha256: written.sha256},
         action: `${context.action.id}@${context.action.version}`,
         ...(context.subject ? {subject: context.subject} : {}),
         snapshot: context.snapshot, package: context.package, diagnostics: [],

@@ -11,11 +11,12 @@ CLI:
 - `mdlm proposal submit <file|-> [--authority <name>] --json`
 - `mdlm proposal settlement <operation> --json`
 - `mdlm execution run <exact-implementation> <operation> --json`
+- `mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <commit>] --json`
 - `mdlm execution settlement <operation> --json`
 - `mdlm review context <action> <exact-subject> --json`
 - `mdlm review register <proposal-file> <verdict-file> --json`
 
-A proposal names the caller's operation identity, package action, exact package and snapshot, optional subject/input revisions, candidates and evidence. The snapshot digest covers the lifecycle repository identity, the first-parent root commit of `HEAD`, together with the package and data, so a proposal or review registration drafted in another repository is rejected even when both hold identical data. `mdlm init` records a random nonce in that commit. Repositories initialized earlier derive the same identity from their existing root commit; two such repositories initialized in the same second with the same package share it. A clone or copy of a lifecycle repository shares its identity, so create each lane with `mdlm init`, never by copying a template repository. Candidate local references use `$<localId>` for an exact revision and `$<localId>.id` for its stable ID. A revision candidate supplies `predecessor` as an exact prior revision. The kernel allocates identities, resolves references and publishes the entire batch atomically. Candidate `created_by`, revision IDs and managed fields are never authored.
+A proposal names the caller's operation identity, package action, exact package and snapshot, optional subject/input revisions, candidates and evidence. The snapshot digest covers the lifecycle repository identity, the first-parent root commit of `HEAD`, together with the package and data, so a proposal or review registration drafted in another repository is rejected even when both hold identical data. `mdlm init` records a random nonce in that commit. Repositories initialized earlier derive the same identity from their existing root commit; two such repositories initialized in the same second with the same package share it. A clone or copy of a lifecycle repository shares its identity, so create each lane with `mdlm init`, never by copying a template repository. [Digest preimages](digests.md) documents the exact snapshot and other digest inputs. Candidate local references use `$<localId>` for an exact revision and `$<localId>.id` for its stable ID. A revision candidate supplies `predecessor` as an exact prior revision. The kernel allocates identities, resolves references and publishes the entire batch atomically. Candidate `created_by`, revision IDs and managed fields are never authored.
 
 Core owns read-only missing-data discovery and eligibility. Domain module exports `finalizeDirectDomain(context)` for generated fields/data and associated semantic validation; finalization takes `DirectFinalizationContext` and returns `Promise<DirectFinalizationResult>`. Errors reject without publication. The domain module owns requirement, source and engineering constraints.
 
@@ -59,7 +60,7 @@ When an activity's exact authoring subject is a requirement set, its review
 context includes that set's complete requirement graph. This contextual graph
 does not expand the activity's selected verification or assessment targets.
 
-Transaction provenance is `created_by.transaction = mdlm-direct-transaction@1`. The immutable record contains exact outputs and package/snapshot/operation/proposal digest bindings. Settlement authenticates all outputs, returns identical accepted work and rejects different content reusing the same operation. Guidance is read-only. No token, Assignment, lease or Scenario invocation authorizes publication.
+Transaction provenance is `created_by.transaction = mdlm-direct-transaction@1`. The immutable record contains exact outputs and package/snapshot/operation/proposal digest bindings. Settlement authenticates all outputs, returns identical accepted work and rejects different content reusing the same operation. Guidance is read-only. No token, Assignment, lease or Scenario invocation authorizes publication. Cross-process exclusion follows the [repository lease contract](repository-leases.md).
 
 Manifest declares `direct_contract: mdlm-direct@1` and `terminal: {when: <expression>, outcome: profile-boundary-reached | lifecycle-complete, reason: <text>}`. Result interfaces are in `direct-contract.ts`; guidance is returned directly with `ok:true` added, never wrapped in a packet. Rejected CLI operations return `{ok:false, diagnostics:[{code,message}]}` and nonzero exit.
 
@@ -174,6 +175,32 @@ artifacts in the preserved response or with `git cat-file blob <receipt-oid>` in
 the lifecycle repository. Export never reruns execution or changes lifecycle
 data. Missing parent directories are created. The destination must be new;
 existing evidence is preserved.
+
+`mdlm execution dry-run <exact-IMP-or-TRY> [--activity <exact-VFY>]... [--all] [--source <commit>] --json`
+is a non-credit readiness check for independent verification. It derives the
+same bindings as `execution run` and executes each selected activity, or every
+activity the product selects, in the same native runtime. It writes no lifecycle
+data, receipts or refs and takes no repository lock. Results are cached under the
+lifecycle repository's `.git/mdlm-dry-run/`, one entry per product and activity
+lineage. An activity reruns when any cache component differs from its last
+completed run: activity text (payload other than verifier location, commit and
+image, plus body and links), verifier source tree, runtime (image and kernel
+version), or product inputs. Product inputs are the declared `formal_files` of a
+partial-acceptance product, otherwise the whole committed product tree. Committed
+`.gitattributes` entries count as inputs, and a product or verifier whose
+attributes use `export-subst` is also keyed on its commit.
+`--all` reruns every selected activity. `--source` runs a committed candidate
+product commit in the product's repository instead of the published one. Runs
+whose container never started are not cached.
+
+The `mdlm-execution-dry-run@1` response has `credit: false`, `ready` (every
+selected activity passed), a `summary` count, and per activity its `outcome`,
+`failingCases`, `cache` (`hit` or `miss`) and `invalidatedBy` (`no-cached-result`,
+`forced`, `activity-text-changed`, `verifier-changed`, `runtime-changed`,
+`product-inputs-changed` or `inputs-unavailable`). Without `--json` it prints a
+short summary. The receipt reader used by every credit path rejects a stored
+dry-run result, so it cannot become execution evidence even when registered
+under an execution ref.
 
 ## Native verification runtime
 
@@ -321,8 +348,9 @@ earlier IMP of the same stable lineage and exact package. Every later revision u
 to the successor must be selection-only, and every current result for the activity
 on an intermediate revision must apply that same original. Name the original
 execution RES, never a historical one. The kernel compares the complete product
-payload except derived source_changes, retains source commit/tree, inventory,
-roles/ranges, command and acceptance scope/formal files, and verifies exact
+payload except derived source_changes and ignores the descriptive body. It
+retains source commit/tree, inventory, roles/ranges, command and acceptance
+scope/formal files, and verifies exact
 requirements, activity authoring context/interfaces and verifier execution
 contract. Changed sibling activities alone do not invalidate the unchanged method.
 Reused observations, prototypes, source reverts and cross-package reuse are

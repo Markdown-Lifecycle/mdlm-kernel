@@ -4,6 +4,7 @@ import {
   writeCommandOutput,
 } from "./command-output.js";
 import { collectPerformanceDiagnostics } from "./performance-diagnostics.js";
+import { withProgress } from "./progress.js";
 
 export interface MdlmCliOptions {
   arguments_: string[];
@@ -16,18 +17,34 @@ export interface MdlmCliOptions {
 
 export async function runMdlmCli(options: MdlmCliOptions): Promise<number> {
   const measured = await collectPerformanceDiagnostics(() =>
-    executeCommandApplication(
-      options.arguments_,
-      options.cwd,
-      options.standardInput,
+    withProgress((line) => { options.stderr.write(line, () => {}); }, () =>
+      executeCommandApplication(
+        options.arguments_,
+        options.cwd,
+        options.standardInput,
+      )
     )
   );
-  await writeCommandOutput(options.stdout, measured.value.output);
+  try {
+    await writeCommandOutput(options.stdout, measured.value.output);
+  } catch (error) {
+    // The command already ran; its durable effects and settlement stay as they are.
+    const cause = error as NodeJS.ErrnoException;
+    await writeCommandOutput(options.stderr, `${JSON.stringify({
+      ok: false,
+      diagnostics: [{
+        code: "command-output-unwritable",
+        message: `The command finished with exit status ${measured.value.exitCode}, but its result could not be written to stdout: ${cause.message}. Durable effects are kept; read the operation's settlement before retrying.`,
+        ...(cause.code ? { cause: cause.code } : {}),
+      }],
+    })}\n`).catch(() => undefined);
+    return 1;
+  }
   if (options.performanceDiagnostics) {
     await writeCommandOutput(
       options.stderr,
       `${JSON.stringify(measured.diagnostics)}\n`,
-    );
+    ).catch(() => undefined);
   }
   return measured.value.exitCode;
 }
