@@ -19,6 +19,7 @@ import {
 } from "./markdown-asset.js";
 import { validatePayloadInheritance } from "./payload-inheritance.js";
 import type { DirectAction } from "./direct-contract.js";
+import { DEPLOYMENT_CAPABILITY, deploymentCapabilityDiagnostics } from "./aws-cdk-deployment.js";
 
 export {
   evaluateLifecycle,
@@ -210,7 +211,7 @@ function validateKernelCapabilityBindings(
 ): ProcessDiagnostic[] {
   return Object.entries(kernelCapabilities).flatMap(([reference, binding]) => {
     const path = `manifest.kernel_capabilities.${reference}.type`;
-    if (reference !== exactBaselineCapability.reference && reference !== "direct-observation@1" && reference !== "direct-observation@2" && reference !== "docker-verification@1" && reference !== "requirement-trace@1" && reference !== "requirement-trace@2" && reference !== "requirement-trace@3" && reference !== "requirement-trace@4" && reference !== "independent-verification@1" && reference !== "review-correction@1" && reference !== "verification-applicability@1" && reference !== "staged-requirements@1" && reference !== "interface-retarget@1") {
+    if (reference !== exactBaselineCapability.reference && reference !== "direct-observation@1" && reference !== "direct-observation@2" && reference !== "docker-verification@1" && reference !== "requirement-trace@1" && reference !== "requirement-trace@2" && reference !== "requirement-trace@3" && reference !== "requirement-trace@4" && reference !== "independent-verification@1" && reference !== "review-correction@1" && reference !== "verification-applicability@1" && reference !== "staged-requirements@1" && reference !== "interface-retarget@1" && reference !== DEPLOYMENT_CAPABILITY) {
       return [{
         code: "unknown-kernel-capability",
         path,
@@ -264,6 +265,10 @@ function validateKernelCapabilities(
       const trace = processPackage.kernelCapabilities["requirement-trace@4"];
       const link = resolved.type.outgoingLinks.find(l => l.id === "retargets-interface");
       if (!trace || binding.type !== trace.type || !link) diagnostics.push({code: "incompatible-kernel-capability", path: bindingPath, message: "Interface retargets require the requirement-trace@4 set type with a retargets-interface link"});
+      continue;
+    }
+    if (reference === DEPLOYMENT_CAPABILITY) {
+      for (const message of deploymentCapabilityDiagnostics(processPackage, resolved.type.kernelManagedPayloadPaths)) diagnostics.push({code: "incompatible-kernel-capability", path: bindingPath, message});
       continue;
     }
     if (reference === "verification-applicability@1") {

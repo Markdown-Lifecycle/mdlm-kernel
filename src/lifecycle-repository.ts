@@ -14,6 +14,7 @@ import { parse, stringify } from "yaml";
 import { structuralValuesEqual } from "./structural-equality.js";
 import { withRepositoryLock } from "./repository-lock.js";
 import { processPackageDigest } from "./process-package-digest.js";
+import { verifyPublicationAnchors, writePublicationAnchor } from "./publication-anchor.js";
 import {
   measure,
   measureAsync,
@@ -710,6 +711,7 @@ export async function readRepositoryData(
     if (!result.ok) diagnostics.push(...result.diagnostics);
     else parsed.push(result.value);
   }
+  diagnostics.push(...await verifyPublicationAnchors(root));
   const capturedTransactions = await captureTransactionSources(root, parsed);
   const authoringPackages = new Map<string, {pkg: ProcessPackage; digest: string}>();
   authoringPackages.set(`${processPackage.manifest.id}@${processPackage.manifest.version}#${selectedDigest}`, {pkg: processPackage, digest: selectedDigest});
@@ -980,6 +982,7 @@ export async function publishTransactionData(
       async (renewLock) => {
         const commitReady = await beforeCommit?.();
         if (commitReady && !commitReady.ok) return commitReady;
+        await writePublicationAnchor(root, executionId, temporaryDirectory);
         await renewLock();
         await fs.rename(temporaryDirectory, finalDirectory);
         return undefined;

@@ -2,7 +2,7 @@ import type { DatumEnvelope, ProcessPackage } from "./index.js";
 import type { ProcessSelection } from "./repository-contract.js";
 
 export interface DirectPackageIdentity { reference: string; digest: string; language: string }
-export type DirectActionKind = "verification-activity" | "independent-result" | "requirements" | "implementation" | "verification-result" | "review" | "acceptance" | "change" | "experiment" | "prototype" | "observation" | "feedback";
+export type DirectActionKind = "verification-activity" | "independent-result" | "requirements" | "implementation" | "verification-result" | "review" | "acceptance" | "change" | "experiment" | "prototype" | "observation" | "feedback" | "deployment";
 export interface DirectAction {
   id: string;
   version: number;

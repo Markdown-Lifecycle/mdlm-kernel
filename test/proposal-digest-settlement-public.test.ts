@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
+import { writePublicationAnchor } from "../src/publication-anchor.js";
 
 // KF-009 registered-review witness: only the stored proposalDigest changes, to the hash of
 // never-registered bytes Q2 that parse equal to the registered proposal Q.
@@ -51,6 +52,9 @@ test("settlement and replay refuse a stored proposal digest that contradicts its
     const q2 = `${JSON.stringify(JSON.parse(q.source), null, 2)}\n`, q2File = path.join(root, "review-q2.json");
     await fs.writeFile(q2File, q2);
     await fs.writeFile(executionFile, JSON.stringify({...tx, proposalDigest: `sha256:${createHash("sha256").update(q2).digest("hex")}`}, null, 2) + "\n");
+    // Also rewrite the publication anchor (ADR 0010 doesn't stop ref writes); the retained review proof must still refuse.
+    const reanchor = () => writePublicationAnchor(repository, q.result.transaction, path.dirname(executionFile));
+    await reanchor();
     const state = [git("status", "--porcelain"), git("show-ref")];
     for (const args of [["proposal", "settlement", "review"], ["proposal", "submit", q2File], ["proposal", "submit", q.file]]) {
       expect(cli(1, ...args).diagnostics[0].message, args.join(" ")).toContain("contradicts its registered review proof");
@@ -58,6 +62,7 @@ test("settlement and replay refuse a stored proposal digest that contradicts its
     expect([git("status", "--porcelain"), git("show-ref")]).toEqual(state);
     // Valid alternative: the untouched transaction settles and replays its exact registered bytes.
     await fs.writeFile(executionFile, original);
+    await reanchor();
     expect(cli(0, "proposal", "settlement", "review")).toMatchObject(accepted);
     expect(cli(0, "proposal", "submit", q.file)).toMatchObject(accepted);
     expect(cli(1, "proposal", "submit", q2File).diagnostics[0].message).toContain("different candidate bytes");
