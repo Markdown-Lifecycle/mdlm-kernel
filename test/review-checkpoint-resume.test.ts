@@ -9,6 +9,7 @@ vi.mock("../src/docker-verification.js", async (importActual) => {
   return {...actual, executeDockerVerification: (input: unknown) => simulatedDockerVerification(actual, input)};
 });
 import { buildEndgameFixture } from "./endgame-fixture.js";
+import { writePublicationAnchor } from "../src/publication-anchor.js";
 
 // Export and registration are killed mid-run, then rerun. The rerun resumes from
 // checkpoints and produces exactly the bytes of an uninterrupted run.
@@ -57,11 +58,12 @@ test("killed export and registration resume to identical results", async () => {
     expect(cli(target, ...exportTo(context)).stderr).toContain(`verification results 4/4 (${saved} resumed from checkpoint)`);
     expect(await fs.readFile(context)).toEqual(await fs.readFile(reference));
     // Transaction records are outside the snapshot; changing one invalidates every checkpoint.
-    const records = path.join(target.repository, ".lifecycle/data/.transactions"), record = path.join(records, (await fs.readdir(records))[0]!, "execution.json");
+    // The edit is re-anchored (ADR 0010), as only a ref-writing forger could, so the checkpoint key is what's tested.
+    const records = path.join(target.repository, ".lifecycle/data/.transactions"), transaction = (await fs.readdir(records))[0]!, record = path.join(records, transaction, "execution.json");
     const original = await fs.readFile(record);
-    await fs.appendFile(record, " ");
+    await fs.appendFile(record, " "); await writePublicationAnchor(target.repository, transaction, path.dirname(record));
     expect(cli(target, ...exportTo(path.join(target.run, "changed.json"))).stderr).not.toContain("resumed");
-    await fs.writeFile(record, original);
+    await fs.writeFile(record, original); await writePublicationAnchor(target.repository, transaction, path.dirname(record));
 
     const review = path.join(target.run, "review.json");
     cli(target, "proposal", "draft", "review-implementation", fixture.implementation, "--operation", "review-implementation", "--output", review);

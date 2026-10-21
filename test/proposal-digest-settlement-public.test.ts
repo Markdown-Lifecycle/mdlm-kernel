@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
+import { writePublicationAnchor } from "../src/publication-anchor.js";
 
 // KF-009 registered-review witness: only the stored proposalDigest changes, to the hash of
 // never-registered bytes Q2 that parse equal to the registered proposal Q.
@@ -52,12 +53,7 @@ test("settlement and replay refuse a stored proposal digest that contradicts its
     await fs.writeFile(q2File, q2);
     await fs.writeFile(executionFile, JSON.stringify({...tx, proposalDigest: `sha256:${createHash("sha256").update(q2).digest("hex")}`}, null, 2) + "\n");
     // Also rewrite the publication anchor (ADR 0010 doesn't stop ref writes); the retained review proof must still refuse.
-    const reanchor = async () => {
-      const directory = path.dirname(executionFile);
-      const files = (await fs.readdir(directory, {recursive: true, withFileTypes: true})).filter(entry => entry.isFile()).map(entry => path.relative(directory, path.join(entry.parentPath, entry.name))).sort();
-      const source = `${JSON.stringify({contract: "mdlm-publication-anchor@1", transaction: q.result.transaction, files: await Promise.all(files.map(async file => ({path: file, sha256: createHash("sha256").update(await fs.readFile(path.join(directory, file))).digest("hex")})))})}\n`;
-      git("update-ref", `refs/mdlm/publication/${q.result.transaction}`, execFileSync("git", ["-C", repository, "hash-object", "-w", "--stdin"], {input: source, encoding: "utf8"}).trim());
-    };
+    const reanchor = () => writePublicationAnchor(repository, q.result.transaction, path.dirname(executionFile));
     await reanchor();
     const state = [git("status", "--porcelain"), git("show-ref")];
     for (const args of [["proposal", "settlement", "review"], ["proposal", "submit", q2File], ["proposal", "submit", q.file]]) {
