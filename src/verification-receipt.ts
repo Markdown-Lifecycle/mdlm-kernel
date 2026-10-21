@@ -2,7 +2,8 @@ import { execFile, spawn } from "node:child_process";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { executeDockerVerification, authenticateVerificationSource, authenticateProductSource, type IndependentVerification } from "./docker-verification.js";
+import { executeDockerVerification, authenticateVerificationSource, authenticateProductSource, type DockerVerificationResult, type IndependentVerification } from "./docker-verification.js";
+import { recaptureVerificationReport, verificationReportOutcome } from "./independent-verification-execution.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
 
 const exec = promisify(execFile);
@@ -18,6 +19,8 @@ export interface VerificationBinding {
   independentVerification?: IndependentVerification;
   formalFiles?: string[];
 }
+/** Dry-run results are readiness checks, never receipts; credit paths reject this contract. */
+export const DRY_RUN_CONTRACT = "mdlm-execution-dry-run@1";
 export const verificationRef = (binding: VerificationBinding) => `refs/mdlm/execution/${binding.operation}`;
 async function git(root: string, args: string[]) {
   return (await exec("git", ["-C", root, ...args], {env: repositoryGitEnvironment(), maxBuffer: 64 * 1024 * 1024})).stdout.trim();
@@ -25,7 +28,10 @@ async function git(root: string, args: string[]) {
 export async function readVerificationReceiptBlob(root: string, oid: string) {
   if (!/^[a-f0-9]{40}$/.test(oid)) throw new Error("Verification receipt must name an exact Git blob");
   const source = await git(root, ["cat-file", "blob", oid]);
-  return {oid, receipt: JSON.parse(source) as {binding: VerificationBinding; attempt: number; result?: Awaited<ReturnType<typeof executeDockerVerification>>; state: string}};
+  const receipt = JSON.parse(source) as {binding: VerificationBinding; attempt: number; result?: Awaited<ReturnType<typeof executeDockerVerification>>; state: string; contract?: unknown};
+  // Every credit path reads receipts here; a stored dry-run result is never evidence.
+  if (receipt?.contract === DRY_RUN_CONTRACT) throw new Error("Dry-run results are non-credit readiness checks and cannot be used as execution evidence");
+  return {oid, receipt};
 }
 /** Read many blobs' bytes with one Git process. Missing or non-blob objects are omitted; callers parse in their own order. */
 export async function readGitBlobs(root: string, oids: string[]): Promise<Map<string, string>> {
@@ -104,3 +110,25 @@ export async function validateVerificationReceipt(binding: VerificationBinding, 
   return {outcome: result.outcome, receipt: `git-blob:${saved.oid}`, saved, ...(binding.independentVerification ? {caseResults: result.caseResults ?? [], artifacts: result.artifacts ?? []} : {})};
 }
 
+/** A fresh pass or fail must be the outcome its own saved execution derives; stored summaries are not trusted. */
+export async function requireCoherentVerificationResult(binding: VerificationBinding, result: DockerVerificationResult) {
+  if (result.outcome === "error") return;
+  const refuse = (field: string): never => { throw new Error(`Verification receipt ${field} contradicts its ${result.outcome} outcome`); };
+  if (result.started !== true || result.phase !== "execution" || !Number.isInteger(result.exitCode)) refuse("start state");
+  // Null source identities would skip source authentication in validateVerificationReceipt.
+  if (result.sourceTree === null || result.scriptSha256 === null) refuse("source identity");
+  if (result.image !== binding.image || !/^sha256:[a-f0-9]{64}$/.test(String(result.imageId))
+    || (/^sha256:[a-f0-9]{64}$/.test(binding.image) && result.imageId !== binding.image)) refuse("imageId");
+  const independent = binding.independentVerification;
+  if (!independent) {
+    if (result.outcome !== (result.exitCode === 0 ? "pass" : result.exitCode === 1 ? "fail" : "error")) refuse("exit code");
+    return;
+  }
+  // The executor records the verifier script digest at top level; the nested copy is source-authenticated.
+  if (!result.independentVerification || result.scriptSha256 !== result.independentVerification.scriptSha256) refuse("scriptSha256");
+  const report = await recaptureVerificationReport(independent, result);
+  if (report.diagnostic) refuse("report");
+  if (!isDeepStrictEqual(report.caseResults, result.caseResults ?? [])) refuse("case results");
+  if (!isDeepStrictEqual(report.artifacts, result.artifacts ?? [])) refuse("artifacts");
+  if (verificationReportOutcome(report, result.exitCode).outcome !== result.outcome) refuse("case outcomes and exit code");
+}

@@ -1,10 +1,10 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runMdlmCli } from "../src/cli-main.js";
 import { executeCommandApplication } from "../src/command-application.js";
 
@@ -83,6 +83,65 @@ process.stdout.write = (_chunk, encoding, callback) => {
     expect(next.status).not.toBe(0);
     expect(next.stdout).toBe("");
     expect(next.stderr).toContain("injected stdout failure");
+  });
+
+  it("reports a closed stdout after review registration as a structured failure and keeps the registration", async () => {
+    // The child resolves symlinked temp paths; the review context binds the exact path.
+    const repository = await fs.realpath(await startedRepository());
+    const registry = path.join(parent!, "registry");
+    await fs.mkdir(registry);
+    const run = async (...args: string[]) => JSON.parse((await executeCommandApplication([...args, "--json"], repository)).output);
+    const requirements = await run("expectations", "show", "draft-requirements@1");
+    const requirementsFile = path.join(parent!, "requirements.json");
+    await fs.writeFile(requirementsFile, JSON.stringify({
+      operation: "requirements", action: requirements.action, package: requirements.package, snapshot: requirements.snapshot, inputs: requirements.inputs,
+      candidates: [
+        {localId: "need", type: "REQ", payload: {title: "Count items", publication: "recorded", kind: "stakeholder", statement: "The user shall obtain the number of supplied items"}, links: [], body: ""},
+        {localId: "count", type: "REQ", payload: {title: "Count arguments", publication: "recorded", kind: "software", ears: {pattern: "ubiquitous", system: "The CLI", response: "print the argument count"}}, links: [], body: ""},
+        {localId: "group", type: "DCP", payload: {title: "Counting", publication: "recorded"}, links: [{type: "parent", target: "$need"}, {type: "child", target: "$count"}], body: ""},
+        requirements.candidates.find((candidate: {type: string}) => candidate.type === "RQS"),
+      ],
+    }));
+    expect(await run("proposal", "submit", requirementsFile)).toMatchObject({ok: true, outcome: "accepted"});
+    const [work] = (await run("expectations")).items;
+    const review = await run("expectations", "show", work.action, work.subject);
+    const reviewFile = path.join(parent!, "review.json");
+    await fs.writeFile(reviewFile, JSON.stringify({operation: "review", action: review.action, package: review.package, snapshot: review.snapshot, subject: review.subject, inputs: review.inputs, candidates: review.candidates}));
+    const env = {...process.env, MDLM_REVIEW_REGISTRY: registry, MDLM_REVIEW_REGISTRAR: "1"};
+
+    const child = spawn(process.execPath, [executable, "review", "register", reviewFile, reviewFile, "--json"], {cwd: repository, env, stdio: ["ignore", "pipe", "pipe"]});
+    child.stdout.destroy();
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    const status = await new Promise<number | null>((resolve) => child.on("close", resolve));
+
+    expect(status, stderr).toBe(1);
+    expect(stderr).not.toContain("Unhandled");
+    expect(JSON.parse(stderr)).toMatchObject({ok: false, diagnostics: [{code: "command-output-unwritable", cause: "EPIPE"}]});
+    const stored = (await fs.readdir(registry)).find((file) => file.endsWith("-review.json"));
+    expect(stored).toBeDefined();
+    const registration = await fs.readFile(path.join(registry, stored!), "utf8");
+    vi.stubEnv("MDLM_REVIEW_REGISTRY", registry);
+    vi.stubEnv("MDLM_REVIEW_REGISTRAR", "1");
+    try {
+      // The registration was stored complete before the output failed; an exact repeat leaves it unchanged.
+      expect(await run("review", "register", reviewFile, reviewFile)).toMatchObject({ok: true, command: "review.register"});
+      expect(await fs.readFile(path.join(registry, stored!), "utf8")).toBe(registration);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("exits nonzero without an uncaught exception when stdout and stderr are both closed", async () => {
+    const repository = await startedRepository();
+    const uncaught = path.join(parent!, "uncaught.txt");
+    const probe = path.join(parent!, "uncaught-monitor.mjs");
+    await fs.writeFile(probe, `import { appendFileSync } from "node:fs";\nprocess.on("uncaughtExceptionMonitor", (error) => appendFileSync(${JSON.stringify(uncaught)}, String(error)));\n`);
+    const child = spawn(process.execPath, ["--import", pathToFileURL(probe).href, executable, "expectations", "--json"], {
+      cwd: repository, env: {...process.env, MDLM_PERFORMANCE: "json"}, stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.destroy();
+    child.stderr.destroy();
+    expect(await new Promise<number | null>((resolve) => child.on("close", resolve))).toBe(1);
+    await expect(fs.readFile(uncaught, "utf8")).rejects.toMatchObject({code: "ENOENT"});
   });
 
   it("runs through an installed-style bin symlink", async () => {
