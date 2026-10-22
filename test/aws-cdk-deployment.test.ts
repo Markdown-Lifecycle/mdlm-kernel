@@ -15,6 +15,7 @@ const run = promisify(execFile);
 const config = {
   synth_image: `cdk-synth@sha256:${"c".repeat(64)}`, cdk_cli_version: "2.1000.0", cdk_app_path: "infra", region: "us-east-1", apm_project: "mdlm-demo",
   stack_slots: ["mdlm-demo-credit", "mdlm-demo-dry-1"], output_allowlist: ["ApiEndpoint"], endpoint_output: "ApiEndpoint", probe_path: "/version", max_lifetime_minutes: 120,
+  resource_allowlist: ["AWS::Lambda::Function", "AWS::ApiGatewayV2::Api", "AWS::DynamoDB::Table", "AWS::Logs::LogGroup"],
 };
 
 // Stand-ins on PATH. They keep state beside themselves because the kernel gives host
@@ -58,8 +59,13 @@ if (args[0] === "synth") {
   const leaked = scenario === "leak" ? " AKIA" + "LEAKEDKEY0000000" : "";
   if (leaked) console.error("debug" + leaked);
   write("asset.abc/index.js", "export const version = " + JSON.stringify((bake ?? process.env.MDLM_PRODUCT_COMMIT) + leaked) + ";\n");
-  write(stack + ".template.json", {Resources: {Fn: {Type: "AWS::Lambda::Function"}, Perm: {Type: "AWS::Lambda::Permission"}, Api: {Type: "AWS::ApiGatewayV2::Api"}, Route: {Type: "AWS::ApiGatewayV2::Route"},
-    Logs: {Type: "AWS::Logs::LogGroup"}, Table: {Type: "AWS::DynamoDB::Table"}}, Outputs: {ApiEndpoint: {Value: "x"}, Secret: {Value: "y"}}});
+  const Delete = {DeletionPolicy: "Delete", UpdateReplacePolicy: "Delete"};
+  write(stack + ".template.json", {Resources: {
+    Fn: {Type: "AWS::Lambda::Function", Properties: {ReservedConcurrentExecutions: 10, LoggingConfig: {LogGroup: {Ref: "Logs"}}}}, Perm: {Type: "AWS::Lambda::Permission", Properties: {FunctionName: {"Fn::GetAtt": ["Fn", "Arn"]}}},
+    Api: {Type: "AWS::ApiGatewayV2::Api", Properties: {ProtocolType: "HTTP"}}, Route: {Type: "AWS::ApiGatewayV2::Route", Properties: {ApiId: {Ref: "Api"}}},
+    Stage: {Type: "AWS::ApiGatewayV2::Stage", Properties: {ApiId: {Ref: "Api"}, DefaultRouteSettings: {ThrottlingBurstLimit: 20, ThrottlingRateLimit: 10}}},
+    Logs: {Type: "AWS::Logs::LogGroup", Properties: {RetentionInDays: 1}, ...Delete}, Table: {Type: "AWS::DynamoDB::Table", Properties: {BillingMode: "PAY_PER_REQUEST"}, ...Delete},
+    ...(scenario === "custom" ? {Cleanup: {Type: "Custom::S3AutoDeleteObjects"}} : {})}, Outputs: {ApiEndpoint: {Value: "x"}, Secret: {Value: "y"}}});
   const source = scenario === "executable" ? {executable: ["sh", "-c", "touch /tmp/pwned"]} : {path: scenario === "escape" ? "../outside" : "asset.abc", packaging: "zip"};
   write((scenario === "nested" ? "nested/" : "") + stack + ".assets.json", {version: "36.0.0", files: {abc: {source, destinations: {}}}, dockerImages: scenario === "docker" ? {img: {source: {directory: "asset.abc"}, destinations: {}}} : {}});
   write("manifest.json", {version: "36.0.0", artifacts: {
@@ -200,7 +206,7 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     await fs.mkdir(path.join(product, "infra"), {recursive: true});
     git(product, "init", "-q");
     const products: Record<string, {commit: string; revision: string}> = {};
-    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["nested", {}], ["mismatch", {bake: "0".repeat(40)}], ["leak", {}]] as const) {
+    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["nested", {}], ["mismatch", {bake: "0".repeat(40)}], ["leak", {}], ["custom", {}]] as const) {
       await fs.writeFile(path.join(product, "infra/fixture.json"), JSON.stringify({scenario, ...extra}));
       git(product, "add", "."); git(product, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", scenario);
       const commit = git(product, "rev-parse", "HEAD"), proposal = await draft("record-product", `product-${scenario}`);
@@ -227,7 +233,7 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     // The stack carries the required tags, and its resource inventory is recorded for teardown.
     const repositoryId = `git-commit:${git(repository, "rev-list", "--max-parents=0", "HEAD")}`;
     expect(result.tags).toEqual({"mdlm:repository": repositoryId, "mdlm:deployment": "deploy-ok", "mdlm:mode": "credit", "mdlm:expires-at": result.expiresAt});
-    expect(result.inventory.map((entry: any) => entry.type).sort()).toEqual(["AWS::ApiGatewayV2::Api", "AWS::ApiGatewayV2::Route", "AWS::DynamoDB::Table", "AWS::Lambda::Function", "AWS::Lambda::Permission", "AWS::Logs::LogGroup"]);
+    expect(result.inventory.map((entry: any) => entry.type).sort()).toEqual(["AWS::ApiGatewayV2::Api", "AWS::ApiGatewayV2::Route", "AWS::ApiGatewayV2::Stage", "AWS::DynamoDB::Table", "AWS::Lambda::Function", "AWS::Lambda::Permission", "AWS::Logs::LogGroup"]);
     expect(result.orphans).toEqual({checkedAt: expect.any(String), orphans: []});
     expect(result.assembly.assets).toEqual([{id: "abc", packaging: "zip", path: "asset.abc", sha256: expect.stringMatching(/^[a-f0-9]{64}$/)}]);
     // Synth ran with no network and no credentials; the host deploy saw only the APM profile.
@@ -287,7 +293,7 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
 
     // Assembly validation refuses before any AWS call, so nothing is deployed.
     await fs.rm(path.join(state, "aws.json"));
-    for (const [scenario, message] of [["executable", "executable source"], ["docker", "Docker image assets"], ["escape", "inside the assembly"], ["symlink", "symlink"], ["cache", "publisher cache"], ["nested", "at the assembly root"]]) {
+    for (const [scenario, message] of [["executable", "executable source"], ["docker", "Docker image assets"], ["escape", "inside the assembly"], ["symlink", "symlink"], ["cache", "publisher cache"], ["nested", "at the assembly root"], ["custom", "template policy: Cleanup (Custom::S3AutoDeleteObjects) is a custom resource"]]) {
       const refused = (await deploy(scenario!, `refuse-${scenario}`)).json.value.receipt.result;
       expect([refused.outcome, refused.phase, refused.deployAttempted], scenario).toEqual(["error", "validation", false]);
       expect(refused.diagnostic).toContain(message);
@@ -352,7 +358,7 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     const tornResult = torn.json.value.receipt.result;
     expect(tornResult, JSON.stringify(tornResult)).toMatchObject({outcome: "pass", phase: "verify", deleteAttempted: true, deployment: "deploy-leak",
       stack: {id: leak.stack.id, status: "DELETE_COMPLETE"}, remaining: {tagged: [], inventory: []}});
-    expect(tornResult.inventory).toHaveLength(6);
+    expect(tornResult.inventory).toHaveLength(7);
     expect(tornResult.orphans.orphans.some((o: any) => o.deployment === "deploy-mismatch")).toBe(true);
     expect((await aws()).resources.filter((r: any) => r.stackId === leak.stack.id)).toEqual([]);
     // The receipt is write-once; repeating the command deletes nothing more.
@@ -430,10 +436,11 @@ test("aws-cdk-deployment@1 refuses a package whose deployment configuration is n
     await fixturePackage(root);
     expect((await loadProcessPackage(root)).ok).toBe(true);
     const actionFile = path.join(root, "actions/deploy-product.yaml"), action = parse(await fs.readFile(actionFile, "utf8"));
-    action.fixed_payload.DPL.synth_image = "cdk-synth:latest";
-    await fs.writeFile(actionFile, stringify(action));
-    const loaded = await loadProcessPackage(root);
-    expect(loaded.ok).toBe(false);
-    expect(JSON.stringify(loaded.diagnostics)).toContain("synth_image must be pinned");
+    for (const [field, value, message] of [["synth_image", "cdk-synth:latest", "synth_image must be pinned"], ["resource_allowlist", ["AWS::EC2::Instance"], "resource_allowlist must list distinct types"]] as const) {
+      await fs.writeFile(actionFile, stringify({...action, fixed_payload: {DPL: {...action.fixed_payload.DPL, [field]: value}}}));
+      const loaded = await loadProcessPackage(root);
+      expect(loaded.ok).toBe(false);
+      expect(JSON.stringify(loaded.diagnostics)).toContain(message);
+    }
   } finally { await fs.rm(root, {recursive: true, force: true}); }
 });
