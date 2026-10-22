@@ -9,6 +9,7 @@ import type { DirectAction } from "./direct-contract.js";
 import { archiveSource, authenticateProductSource, checked, execute } from "./docker-verification.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
 import { refuseSecretValues, type SecretFinding } from "./secret-scan.js";
+import type { OrphanReport } from "./deployment-teardown.js";
 
 // ADR-0009 section 1. Synth runs product code in the sandbox; only a validated
 // assembly reaches the host CDK CLI, which alone uses the operator's APM profile.
@@ -43,7 +44,11 @@ export interface DeploymentBinding {
   config: DeploymentConfig;
   stack: string;
   awsProfile: string;
+  /** Lifecycle repository identity, recorded in the `mdlm:repository` tag. */
+  repository: string;
 }
+/** One resource of the deployed stack, from ListStackResources (ADR-0009 section 4). */
+export interface InventoryEntry {logicalId: string; type: string; physicalId: string}
 type Phase = "source" | "synth" | "validation" | "access" | "deploy" | "stack" | "probe";
 export interface DeploymentResult {
   outcome: "pass" | "error";
@@ -64,12 +69,17 @@ export interface DeploymentResult {
   probe?: {url: string; status: number | null; expectedVersion: string; matched: boolean; bodyBase64: string};
   deployedVersion?: string;
   expiresAt?: string;
+  /** Required tags the host CDK CLI applied to the stack; CloudFormation propagates them to taggable resources. */
+  tags?: Record<string, string>;
+  inventory?: InventoryEntry[];
+  /** The orphan check that ran before the deploy. It only reports. */
+  orphans?: OrphanReport;
   /** Present only on a result refused by the secret-pattern scan. */
   secretFindings?: SecretFinding[];
 }
 
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
-const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && !value.includes("\0");
+export const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && !value.includes("\0");
 const relative = (value: unknown): value is string => nonEmpty(value) && !value.startsWith("/") && !value.includes("\\") && value.split("/").every(part => part && part !== "." && part !== "..");
 const deployedStatus = (status: unknown) => /_COMPLETE$/.test(String(status)) && !/ROLLBACK|DELETE/.test(String(status));
 const sha256 = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
@@ -118,7 +128,7 @@ function deploymentAction(pkg: ProcessPackage): {action: DirectAction; type: str
   return {action, type: binding.type, implementationType: binding.implementation_type!, config: parseDeploymentConfig(action.fixed_payload?.[binding.type])};
 }
 
-export function deploymentRunBinding(state: {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]}, productId: string, operation: string, options: {stack: string; awsProfile: string}): DeploymentBinding {
+export function deploymentRunBinding(state: {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; repository: string}, productId: string, operation: string, options: {stack: string; awsProfile: string}): DeploymentBinding {
   const {action, implementationType, config} = deploymentAction(state.pkg);
   const product = state.data.find(d => d.revision_id === productId);
   if (!product || product.type !== implementationType) throw new Error(`Deployment subject must be an exact ${implementationType} revision`);
@@ -127,18 +137,23 @@ export function deploymentRunBinding(state: {pkg: ProcessPackage; package: unkno
   // ADR-0009 section 3: the kernel uses only the package-named APM profile.
   if (options.awsProfile !== `apm-${config.apm_project}`) throw new Error(`Deployment requires --aws-profile apm-${config.apm_project} from aws-permissions-manager`);
   return {contract: "mdlm-deployment@1", operation, package: state.package, action: `${action.id}@${action.version}`, product: product.revision_id,
-    repositoryPath: String(product.payload.repository_path), sourceCommit: String(product.payload.source_commit), config, stack: options.stack, awsProfile: options.awsProfile};
+    repositoryPath: String(product.payload.repository_path), sourceCommit: String(product.payload.source_commit), config, stack: options.stack, awsProfile: options.awsProfile, repository: state.repository};
+}
+
+/** The tags every deployment carries (ADR-0009 section 4). `mdlm:deployment` is the deployment operation, which the DPL's receipt names. */
+export function deploymentTags(binding: DeploymentBinding, expiresAt: string): Record<string, string> {
+  return {"mdlm:repository": binding.repository, "mdlm:deployment": binding.operation, "mdlm:mode": "credit", "mdlm:expires-at": expiresAt};
 }
 
 /** Host commands see only the profile name, never inherited key material or another profile.
  * They run in an empty directory, so no project cdk.json (or its plugins) is ever loaded. */
-function hostOptions(binding: DeploymentBinding, cwd: string): {env: NodeJS.ProcessEnv; cwd: string} {
+export function hostOptions(binding: Pick<DeploymentBinding, "awsProfile"> & {config: Pick<DeploymentConfig, "region">}, cwd: string): {env: NodeJS.ProcessEnv; cwd: string} {
   const env: NodeJS.ProcessEnv = {PATH: process.env.PATH ?? "", AWS_PROFILE: binding.awsProfile, AWS_REGION: binding.config.region, AWS_DEFAULT_REGION: binding.config.region, CDK_DISABLE_VERSION_CHECK: "1"};
   for (const name of ["HOME", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"]) if (process.env[name]) env[name] = process.env[name];
   return {env, cwd};
 }
 
-function hostFailure(label: string, result: {exitCode: number | null; problem?: string; stderr: Buffer}): string {
+export function hostFailure(label: string, result: {exitCode: number | null; problem?: string; stderr: Buffer}): string {
   return `${label} failed: ${result.problem ?? `exit ${result.exitCode}: ${result.stderr.toString("utf8").trim().slice(0, 2000)}`}`;
 }
 
@@ -256,12 +271,22 @@ export async function validateCloudAssembly(assembly: string, expected: {stack: 
   return {templateSha256: await fileDigest(template), assets: assets.sort((a, b) => a.id.localeCompare(b.id))};
 }
 
-async function describeStack(binding: DeploymentBinding, host: {env: NodeJS.ProcessEnv; cwd: string}): Promise<Record<string, any> | undefined> {
-  const described = await execute("aws", ["cloudformation", "describe-stacks", "--stack-name", binding.stack, "--region", binding.config.region, "--output", "json"], 60_000, host);
+/** Describe a stack by name or ID. A deleted stack is returned only when asked for by ID. */
+export async function describeStack(stack: string, region: string, host: {env: NodeJS.ProcessEnv; cwd: string}, includeDeleted = false): Promise<Record<string, any> | undefined> {
+  const described = await execute("aws", ["cloudformation", "describe-stacks", "--stack-name", stack, "--region", region, "--output", "json"], 60_000, host);
   if (described.exitCode !== 0 && !described.problem && /does not exist/.test(described.stderr.toString("utf8"))) return undefined;
   if (described.problem || described.exitCode !== 0) throw new Error(hostFailure("aws cloudformation describe-stacks", described));
-  const stack = (JSON.parse(described.stdout.toString("utf8")) as {Stacks?: Record<string, any>[]}).Stacks?.[0];
-  return stack?.StackStatus === "DELETE_COMPLETE" ? undefined : stack;
+  const found = (JSON.parse(described.stdout.toString("utf8")) as {Stacks?: Record<string, any>[]}).Stacks?.[0];
+  return found?.StackStatus === "DELETE_COMPLETE" && !includeDeleted ? undefined : found;
+}
+export const stackTags = (stack: Record<string, any>): Record<string, string> =>
+  Object.fromEntries((Array.isArray(stack.Tags) ? stack.Tags as {Key?: string; Value?: string}[] : []).map(tag => [String(tag.Key), String(tag.Value)]));
+
+export async function listStackResources(stackId: string, region: string, host: {env: NodeJS.ProcessEnv; cwd: string}): Promise<InventoryEntry[]> {
+  const listed = await execute("aws", ["cloudformation", "list-stack-resources", "--stack-name", stackId, "--region", region, "--output", "json"], 120_000, host);
+  if (listed.problem || listed.exitCode !== 0) throw new Error(hostFailure("aws cloudformation list-stack-resources", listed));
+  const summaries = (JSON.parse(listed.stdout.toString("utf8")) as {StackResourceSummaries?: Record<string, unknown>[]}).StackResourceSummaries ?? [];
+  return summaries.map(r => ({logicalId: String(r.LogicalResourceId), type: String(r.ResourceType), physicalId: String(r.PhysicalResourceId ?? "")}));
 }
 
 async function probe(url: string, expected: string): Promise<NonNullable<DeploymentResult["probe"]>> {
@@ -277,7 +302,7 @@ async function probe(url: string, expected: string): Promise<NonNullable<Deploym
 }
 
 /** One deployment attempt. It never retries; the caller persists the started marker first. */
-export async function executeDeployment(binding: DeploymentBinding): Promise<DeploymentResult> {
+export async function executeDeployment(binding: DeploymentBinding, checks: {orphans?: (host: {env: NodeJS.ProcessEnv; cwd: string}) => Promise<OrphanReport>} = {}): Promise<DeploymentResult> {
   const result: DeploymentResult = {outcome: "error", phase: "source", deployAttempted: false, startedAt: new Date().toISOString(), finishedAt: ""};
   const directory = await fs.mkdtemp(path.join(tmpdir(), "mdlm-deployment-"));
   const host = hostOptions(binding, path.join(directory, "host"));
@@ -301,27 +326,35 @@ export async function executeDeployment(binding: DeploymentBinding): Promise<Dep
     const caller = JSON.parse(identity.stdout.toString("utf8")) as {Account?: string; Arn?: string};
     if (!/^\d{12}$/.test(String(caller.Account)) || !nonEmpty(caller.Arn)) throw new Error("aws sts get-caller-identity returned no account and caller ARN");
     result.access = {apmProject: binding.config.apm_project, callerArn: caller.Arn, account: caller.Account!};
-    const existing = await describeStack(binding, host);
+    // ADR-0009 section 4: the orphan check runs before every deploy and only reports.
+    if (checks.orphans) result.orphans = await checks.orphans(host);
+    const existing = await describeStack(binding.stack, binding.config.region, host);
     if (existing) throw new Error(`Stack slot '${binding.stack}' already holds stack ${String(existing.StackId)} (${String(existing.StackStatus)}); tear it down before deploying`);
 
     result.phase = "deploy";
+    // Tags are applied at deploy time, not synthesized, so the template digest stays a function of the commit.
+    result.expiresAt = new Date(Date.now() + binding.config.max_lifetime_minutes * 60_000).toISOString();
+    result.tags = deploymentTags(binding, result.expiresAt);
     result.deployAttempted = true;
-    const deployed = await execute("cdk", ["deploy", "--app", assembly, "--require-approval", "never", "--ci", "--no-notices", binding.stack], HOST_TIMEOUT_MS, host);
+    const deployed = await execute("cdk", ["deploy", "--app", assembly, "--require-approval", "never", "--ci", "--no-notices",
+      ...Object.entries(result.tags).flatMap(([key, value]) => ["--tags", `${key}=${value}`]), binding.stack], HOST_TIMEOUT_MS, host);
     result.deploy = {exitCode: deployed.exitCode, stdoutBase64: deployed.stdout.toString("base64"), stderrBase64: deployed.stderr.toString("base64")};
     if (deployed.problem || deployed.exitCode !== 0) throw new Error(hostFailure("cdk deploy", deployed));
 
     result.phase = "stack";
-    const stack = await describeStack(binding, host);
+    const stack = await describeStack(binding.stack, binding.config.region, host);
     if (!stack || !deployedStatus(stack.StackStatus)) throw new Error(`Stack '${binding.stack}' is not deployed after cdk deploy (${String(stack?.StackStatus ?? "absent")})`);
     const account = /^arn:aws[a-z-]*:cloudformation:[^:]+:(\d{12}):/.exec(String(stack.StackId))?.[1];
     if (account !== result.access.account) throw new Error("Deployed stack account differs from the caller identity");
     result.stack = {account, region: binding.config.region, name: binding.stack, id: String(stack.StackId), status: String(stack.StackStatus), lastUpdatedTime: String(stack.LastUpdatedTime ?? stack.CreationTime)};
+    result.inventory = await listStackResources(result.stack.id, binding.config.region, host);
+    const applied = stackTags(stack);
+    if (Object.entries(result.tags).some(([key, value]) => applied[key] !== value)) throw new Error(`Stack '${binding.stack}' does not carry the required mdlm tags`);
     const outputs = new Map((Array.isArray(stack.Outputs) ? stack.Outputs as {OutputKey?: string; OutputValue?: string}[] : []).map(o => [o.OutputKey, o.OutputValue]));
     result.outputs = Object.fromEntries(binding.config.output_allowlist.filter(name => typeof outputs.get(name) === "string").map(name => [name, outputs.get(name)!]));
     const endpoint = result.outputs[binding.config.endpoint_output];
     if (!endpoint || !/^https?:\/\//.test(endpoint)) throw new Error(`Allowlisted endpoint output '${binding.config.endpoint_output}' is missing or not an HTTP(S) URL`);
     result.endpoint = endpoint;
-    result.expiresAt = new Date(Date.now() + binding.config.max_lifetime_minutes * 60_000).toISOString();
 
     result.phase = "probe";
     result.probe = await probe(`${endpoint.replace(/\/+$/, "")}${binding.config.probe_path}`, binding.sourceCommit);
@@ -398,12 +431,13 @@ export async function requireCoherentDeployment(binding: DeploymentBinding, resu
   }
   if (outputs !== undefined && (!object(outputs) || Object.entries(outputs).some(([name, value]) => !binding.config.output_allowlist.includes(name) || typeof value !== "string"))) refuse("outputs");
   if (endpoint !== undefined && (!stack || outputs?.[binding.config.endpoint_output] !== endpoint)) refuse("endpoint");
-  if (result.expiresAt !== undefined && (!stack || Number.isNaN(Date.parse(result.expiresAt)))) refuse("expiresAt");
+  if (result.expiresAt !== undefined && (!result.deployAttempted || Number.isNaN(Date.parse(result.expiresAt)))) refuse("expiresAt");
+  if (result.tags !== undefined && (!result.expiresAt || !isDeepStrictEqual(result.tags, deploymentTags(binding, result.expiresAt)))) refuse("tags");
   if (result.deployedVersion !== undefined && result.deployedVersion !== binding.sourceCommit) refuse("deployedVersion");
   if (result.outcome !== "pass") return;
   const source = await authenticateProductSource(binding);
   if (result.phase !== "probe" || !result.deployAttempted || result.deploy?.exitCode !== 0 || result.source?.commit !== source.sourceCommit || result.source.tree !== source.sourceTree) refuse("source or deploy");
-  if (!stack || !deployedStatus(stack.status) || !endpoint || !result.expiresAt) refuse("stack");
+  if (!stack || !deployedStatus(stack.status) || !endpoint || !result.expiresAt || !result.tags || !Array.isArray(result.inventory)) refuse("stack");
   // The match is recomputed from the recorded response, never taken from the stored flag.
   const body = Buffer.from(String(probe?.bodyBase64 ?? ""), "base64").toString("utf8");
   if (!probe || probe.url !== `${endpoint!.replace(/\/+$/, "")}${binding.config.probe_path}` || probe.expectedVersion !== binding.sourceCommit
@@ -412,7 +446,7 @@ export async function requireCoherentDeployment(binding: DeploymentBinding, resu
 }
 
 /** Authenticate a cited receipt against the current exact product and package-fixed configuration. */
-export async function validateDeploymentReceipt(root: string, state: {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]}, locator: string, product: string) {
+export async function validateDeploymentReceipt(root: string, state: {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; repository: string}, locator: string, product: string) {
   if (!/^git-blob:[a-f0-9]{40}$/.test(locator)) throw new Error("Deployment evidence requires an exact receipt blob");
   const saved = await readDeploymentReceiptBlob(root, locator.slice(9));
   const {binding, result} = saved.receipt;
