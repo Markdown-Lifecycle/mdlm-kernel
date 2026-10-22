@@ -33,6 +33,7 @@ function tagProblem(tags: unknown): string | undefined {
   if (keys.some(key => key.startsWith("mdlm:"))) return "sets mdlm: tags, which only the kernel applies";
   return undefined;
 }
+const hasTransform = (value: unknown): boolean => Array.isArray(value) ? value.some(hasTransform) : object(value) && Object.entries(value).some(([key, item]) => key === "Fn::Transform" || hasTransform(item));
 const positive = (value: unknown) => typeof value === "number" && value > 0;
 
 /** Every rule the template breaks; an empty list means it may be deployed. */
@@ -42,6 +43,8 @@ export function templatePolicyProblems(template: unknown, stack: {name: string; 
   const stackTagProblem = tagProblem(stack.tags);
   if (stackTagProblem) problems.push(`the stack ${stackTagProblem}`);
   if (!object(template) || !object(template.Resources)) return [...problems, "the template has no Resources"];
+  // CloudFormation expands transforms and macros after this check, so they could add anything.
+  if (template.Transform !== undefined || hasTransform(template)) problems.push("the template uses a transform or macro, which CloudFormation expands after this check");
   const resources = template.Resources as Record<string, any>;
   const typeOf = (id: string | undefined) => id !== undefined && object(resources[id]) ? resources[id].Type : undefined;
   const allowed = (type: string) => config.resource_allowlist.includes(type);

@@ -227,7 +227,8 @@ set. It then refuses the cloud assembly unless it holds exactly one stack named
 for the slot and only file assets already materialized inside the assembly: no
 symlinks, `executable` sources, Docker image assets, legacy asset metadata, nested
 assemblies or paths outside it. It also refuses a template that breaks the
-template policy, naming every broken rule: a resource type off the package
+template policy, naming every broken rule: a `Transform` or `Fn::Transform`
+(expanded after the check); a resource type off the package
 allowlist; a custom resource (`Custom::*`, `AWS::CloudFormation::CustomResource`);
 an API stage, route or integration, or a Lambda permission, that does not
 reference an allowlisted parent in the same stack (`AWS::CDK::Metadata` is

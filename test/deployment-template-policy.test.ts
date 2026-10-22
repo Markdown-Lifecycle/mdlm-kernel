@@ -24,6 +24,8 @@ test("the template policy accepts the demo stack", () => {
 test("each template policy rule refuses a template that breaks it", () => {
   const cases: [string, (t: {Resources: Record<string, any>}) => void, string][] = [
     ["allowlist", t => { t.Resources.Queue = {Type: "AWS::SQS::Queue"}; }, "Queue (AWS::SQS::Queue) is not on the package resource allowlist"],
+    ["transform", t => { (t as any).Transform = {Name: "AWS::Include", Parameters: {Location: "s3://bucket/extra.yaml"}}; }, "the template uses a transform or macro"],
+    ["transform", t => { t.Resources.Fn.Properties.Code = {"Fn::Transform": {Name: "SomeMacro"}}; }, "the template uses a transform or macro"],
     ["allowlist", t => { t.Resources.Nat = {Type: "AWS::EC2::NatGateway"}; }, "is not on the package resource allowlist"],
     ["custom resource", t => { t.Resources.Cleanup = {Type: "Custom::S3AutoDeleteObjects"}; }, "Cleanup (Custom::S3AutoDeleteObjects) is a custom resource"],
     ["custom resource", t => { t.Resources.Cleanup = {Type: "AWS::CloudFormation::CustomResource"}; }, "is a custom resource"],
