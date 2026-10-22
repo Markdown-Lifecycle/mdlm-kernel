@@ -17,11 +17,11 @@ const HOST_TIMEOUT_MS = 30 * 60_000;
 type Host = {env: NodeJS.ProcessEnv; cwd: string};
 
 /** V1 top-level resource types the kernel can check and delete, and how each appears in an ARN. */
-const TOP_LEVEL: Record<string, {arn: RegExp; get: (id: string) => string[]; remove: (id: string) => string[]; missing: RegExp; found?: (output: any, id: string) => boolean}> = {
-  "AWS::Lambda::Function": {arn: /^arn:aws[a-z-]*:lambda:([^:]+):\d{12}:function:([^:]+)$/, get: id => ["lambda", "get-function", "--function-name", id], remove: id => ["lambda", "delete-function", "--function-name", id], missing: /ResourceNotFoundException/},
-  "AWS::ApiGatewayV2::Api": {arn: /^arn:aws[a-z-]*:apigateway:([^:]+)::\/apis\/([^/]+)$/, get: id => ["apigatewayv2", "get-api", "--api-id", id], remove: id => ["apigatewayv2", "delete-api", "--api-id", id], missing: /NotFoundException/},
-  "AWS::DynamoDB::Table": {arn: /^arn:aws[a-z-]*:dynamodb:([^:]+):\d{12}:table\/([^/]+)$/, get: id => ["dynamodb", "describe-table", "--table-name", id], remove: id => ["dynamodb", "delete-table", "--table-name", id], missing: /ResourceNotFoundException/},
-  "AWS::Logs::LogGroup": {arn: /^arn:aws[a-z-]*:logs:([^:]+):\d{12}:log-group:(.+?)(?::\*)?$/, get: id => ["logs", "describe-log-groups", "--log-group-name-prefix", id], remove: id => ["logs", "delete-log-group", "--log-group-name", id],
+const TOP_LEVEL: Record<string, {arn: RegExp; build: (region: string, account: string, id: string) => string; get: (id: string) => string[]; remove: (id: string) => string[]; missing: RegExp; found?: (output: any, id: string) => boolean}> = {
+  "AWS::Lambda::Function": {arn: /^arn:aws[a-z-]*:lambda:([^:]+):\d{12}:function:([^:]+)$/, build: (r, a, id) => `arn:aws:lambda:${r}:${a}:function:${id}`, get: id => ["lambda", "get-function", "--function-name", id], remove: id => ["lambda", "delete-function", "--function-name", id], missing: /ResourceNotFoundException/},
+  "AWS::ApiGatewayV2::Api": {arn: /^arn:aws[a-z-]*:apigateway:([^:]+)::\/apis\/([^/]+)$/, build: (r, _a, id) => `arn:aws:apigateway:${r}::/apis/${id}`, get: id => ["apigatewayv2", "get-api", "--api-id", id], remove: id => ["apigatewayv2", "delete-api", "--api-id", id], missing: /NotFoundException/},
+  "AWS::DynamoDB::Table": {arn: /^arn:aws[a-z-]*:dynamodb:([^:]+):\d{12}:table\/([^/]+)$/, build: (r, a, id) => `arn:aws:dynamodb:${r}:${a}:table/${id}`, get: id => ["dynamodb", "describe-table", "--table-name", id], remove: id => ["dynamodb", "delete-table", "--table-name", id], missing: /ResourceNotFoundException/},
+  "AWS::Logs::LogGroup": {arn: /^arn:aws[a-z-]*:logs:([^:]+):\d{12}:log-group:(.+?)(?::\*)?$/, build: (r, a, id) => `arn:aws:logs:${r}:${a}:log-group:${id}`, get: id => ["logs", "describe-log-groups", "--log-group-name-prefix", id], remove: id => ["logs", "delete-log-group", "--log-group-name", id],
     missing: /ResourceNotFoundException/, found: (output, id) => (output?.logGroups ?? []).some((group: {logGroupName?: string}) => group.logGroupName === id)},
 };
 /** Untaggable or bookkeeping children that AWS deletes with their allowlisted parent. */
@@ -48,17 +48,19 @@ export function requireApmProfile(config: DeploymentConfig, awsProfile: string) 
 const exec = promisify(execFile);
 const git = async (root: string, args: string[]) => (await exec("git", ["-C", root, ...args], {env: repositoryGitEnvironment(), maxBuffer: 64 * 1024 * 1024})).stdout.trim();
 
-/** What this repository knows about its deployments: published DPLs by deployment operation, and deployments already torn down. */
-export interface DeploymentRegistry {repository: string; deployments: Map<string, string>; tornDown: Set<string>}
+/** What this repository knows about its deployments: published DPLs by deployment operation, with their recorded stack and inventory, and deployments already torn down. */
+export interface DeploymentRegistry {repository: string; deployments: Map<string, {revision: string; stackId?: string; account?: string; inventory: InventoryEntry[]}>; tornDown: Set<string>}
 export async function deploymentRegistry(state: {root: string; pkg: ProcessPackage; data: DatumEnvelope[]; repository: string}): Promise<DeploymentRegistry> {
-  const type = deploymentBinding(state.pkg)?.type, deployments = new Map<string, string>(), tornDown = new Set<string>();
+  const type = deploymentBinding(state.pkg)?.type, deployments: DeploymentRegistry["deployments"] = new Map(), tornDown = new Set<string>();
   for (const datum of state.data.filter(d => d.type === type && /^git-blob:[a-f0-9]{40}$/.test(String(d.payload.receipt)))) {
-    deployments.set((await readDeploymentReceiptBlob(state.root, String(datum.payload.receipt).slice(9))).receipt.binding.operation, datum.revision_id);
+    const {binding, result} = (await readDeploymentReceiptBlob(state.root, String(datum.payload.receipt).slice(9))).receipt;
+    deployments.set(binding.operation, {revision: datum.revision_id, ...(result?.stack ? {stackId: result.stack.id} : {}), ...(result?.access ? {account: result.access.account} : {}), inventory: result?.inventory ?? []});
   }
   const refs = await git(state.root, ["for-each-ref", "--format=%(objectname)", "refs/mdlm/teardown"]);
   for (const oid of new Set(refs.split("\n").filter(Boolean))) {
     const receipt = (await readTeardownReceiptBlob(state.root, oid)).receipt;
-    if (receipt.result?.outcome === "pass" && receipt.result.deployment) tornDown.add(receipt.result.deployment);
+    // Only a stack teardown proves a whole deployment gone; deleting one orphan resource does not.
+    if (receipt.result?.outcome === "pass" && receipt.result.deployment && receipt.binding.target.kind !== "orphan-resource") tornDown.add(receipt.result.deployment);
   }
   return {repository: state.repository, deployments, tornDown};
 }
@@ -100,6 +102,16 @@ export async function findOrphans(config: DeploymentConfig, registry: Deployment
     if (/^arn:aws[a-z-]*:cloudformation:/.test(resource.arn)) continue;
     const reason = orphanReason(resource.tags, registry, now);
     if (reason) orphans.push({kind: "resource", arn: resource.arn, ...(resource.tags["mdlm:deployment"] ? {deployment: resource.tags["mdlm:deployment"]} : {}), reason});
+  }
+  // The inventory covers resources the tag query cannot see: once a live deployment's stack is gone, any surviving top-level resource is an orphan.
+  for (const [deployment, known] of registry.deployments) {
+    if (registry.tornDown.has(deployment) || !known.stackId || !known.account) continue;
+    const stack = await describeStack(known.stackId, config.region, host, true);
+    if (stack && stack.StackStatus !== "DELETE_COMPLETE") continue;
+    for (const entry of known.inventory.filter(entry => TOP_LEVEL[entry.type])) {
+      const arn = TOP_LEVEL[entry.type]!.build(config.region, known.account, entry.physicalId);
+      if (!orphans.some(o => o.arn === arn) && await resourceExists(host, config.region, entry.type, entry.physicalId)) orphans.push({kind: "resource", arn, deployment, reason: `an inventoried resource of deployment '${deployment}' outlived its stack`});
+    }
   }
   return {checkedAt, orphans};
 }

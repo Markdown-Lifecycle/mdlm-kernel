@@ -116,7 +116,7 @@ if (args[0] === "cloudformation") {
 }
 if (args[0] === "resourcegroupstaggingapi" && args[1] === "get-resources") {
   const filters = args.filter(arg => arg.startsWith("Key=")).map(arg => /^Key=([^,]+),Values=(.*)$/.exec(arg));
-  const tagged = [...db.stacks.filter(s => s.StackStatus !== "DELETE_COMPLETE").map(s => ({arn: s.StackId, tags: s.Tags})), ...db.resources.filter(r => r.arn)];
+  const tagged = [...db.stacks.filter(s => s.StackStatus !== "DELETE_COMPLETE").map(s => ({arn: s.StackId, tags: s.Tags})), ...db.resources.filter(r => r.arn && r.tags)];
   done({ResourceTagMappingList: tagged.filter(r => filters.every(([, key, value]) => r.tags.some(t => t.Key === key && t.Value === value))).map(r => ({ResourceARN: r.arn, Tags: r.tags}))});
 }
 const resources = {lambda: ["AWS::Lambda::Function", "--function-name", "ResourceNotFoundException"], apigatewayv2: ["AWS::ApiGatewayV2::Api", "--api-id", "NotFoundException"],
@@ -400,6 +400,16 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     expect((await cli("deployment", "orphans", ...profile)).json.value.orphans.map((o: any) => o.arn)).toEqual([queue, expired]);
     await fs.rm(path.join(state, "fail-delete"));
     expect((await teardown(againDpl, "teardown-again-2")).json.value.receipt.result).toMatchObject({outcome: "pass", stack: {status: "DELETE_COMPLETE"}});
+
+    // The recorded inventory finds an untagged resource that outlived deploy-ok's stack; deleting it is resource-only
+    // and does not mark deploy-ok torn down, so its expired resource keeps its own reason.
+    const outlived = await aws(), tablePhysical = result.inventory.find((e: any) => e.type === "AWS::DynamoDB::Table").physicalId;
+    outlived.resources.push({stackId: "none", logicalId: "Table", type: "AWS::DynamoDB::Table", physicalId: tablePhysical, arn: `arn:aws:dynamodb:us-east-1:123456789012:table/${tablePhysical}`});
+    await fs.writeFile(path.join(state, "aws.json"), JSON.stringify(outlived));
+    const inventoried = (await cli("deployment", "orphans", ...profile)).json.value.orphans;
+    expect(inventoried).toContainEqual({kind: "resource", arn: `arn:aws:dynamodb:us-east-1:123456789012:table/${tablePhysical}`, deployment: "deploy-ok", reason: expect.stringContaining("outlived its stack")});
+    expect((await resourceTeardown("orphan-outlived", `arn:aws:dynamodb:us-east-1:123456789012:table/${tablePhysical}`, "--yes")).json.value.receipt.result.outcome).toBe("pass");
+    expect((await cli("deployment", "orphans", ...profile)).json.value.orphans.map((o: any) => [o.arn, o.reason])).toEqual([[queue, expect.stringContaining("names no deployment record")], [expired, expect.stringContaining("has passed")]]);
   } finally {
     server.close();
     await fs.rm(root, {recursive: true, force: true});
