@@ -10,6 +10,7 @@ import { archiveSource, authenticateProductSource, checked, execute } from "./do
 import { repositoryGitEnvironment } from "./git-environment.js";
 import { refuseSecretValues, type SecretFinding } from "./secret-scan.js";
 import type { OrphanReport } from "./deployment-teardown.js";
+import { POLICY_RESOURCE_TYPES, templatePolicyProblems } from "./deployment-template-policy.js";
 
 // ADR-0009 section 1. Synth runs product code in the sandbox; only a validated
 // assembly reaches the host CDK CLI, which alone uses the operator's APM profile.
@@ -32,6 +33,8 @@ export interface DeploymentConfig {
   endpoint_output: string;
   probe_path: string;
   max_lifetime_minutes: number;
+  /** Top-level resource types the template may contain (ADR-0009 section 4). */
+  resource_allowlist: string[];
 }
 export interface DeploymentBinding {
   contract: "mdlm-deployment@1";
@@ -106,6 +109,8 @@ export function parseDeploymentConfig(value: unknown): DeploymentConfig {
   if (!outputs.includes(String(c.endpoint_output))) fail("endpoint_output must be an allowlisted output");
   if (!/^\/[\x21-\x7e]*$/.test(String(c.probe_path))) fail("probe_path must be an absolute URL path");
   if (!Number.isInteger(c.max_lifetime_minutes) || (c.max_lifetime_minutes as number) < 1) fail("max_lifetime_minutes must be a positive integer");
+  const allowlist = c.resource_allowlist;
+  if (!Array.isArray(allowlist) || !allowlist.length || new Set(allowlist).size !== allowlist.length || allowlist.some(type => !POLICY_RESOURCE_TYPES.includes(String(type)))) fail(`resource_allowlist must list distinct types from: ${POLICY_RESOURCE_TYPES.join(", ")}`);
   return value as unknown as DeploymentConfig;
 }
 
@@ -209,7 +214,7 @@ async function walk(root: string, at = ""): Promise<string[]> {
 }
 
 /** Only materialized in-assembly file assets may reach the host. Anything the CDK CLI would build or run there is refused. */
-export async function validateCloudAssembly(assembly: string, expected: {stack: string; region: string}): Promise<NonNullable<DeploymentResult["assembly"]>> {
+export async function validateCloudAssembly(assembly: string, expected: {stack: string; region: string}, policy?: Pick<DeploymentConfig, "stack_slots" | "resource_allowlist">): Promise<NonNullable<DeploymentResult["assembly"]>> {
   const refuse = (message: string): never => { throw new Error(`Cloud assembly refused: ${message}`); };
   const files = await walk(assembly);
   const inside = (field: string, value: unknown) => {
@@ -268,6 +273,9 @@ export async function validateCloudAssembly(assembly: string, expected: {stack: 
   if (environment !== expected.region && environment !== "unknown-region") refuse(`stack environment '${String(stack.environment)}' differs from region '${expected.region}'`);
   const template = inside("stack templateFile", stack.properties?.templateFile);
   if (!files.includes(template)) refuse(`stack template '${template}' is missing`);
+  // ADR-0009 section 4: the cost and cleanup rules are checked before anything calls AWS.
+  const problems = policy ? templatePolicyProblems(await json(template), {name: String(name), tags: stack.properties?.tags}, policy) : [];
+  if (problems.length) refuse(`template policy: ${problems.join("; ")}`);
   return {templateSha256: await fileDigest(template), assets: assets.sort((a, b) => a.id.localeCompare(b.id))};
 }
 
@@ -318,7 +326,7 @@ export async function executeDeployment(binding: DeploymentBinding, checks: {orp
     result.phase = "synth";
     const assembly = await synthesize(binding, directory, result);
     result.phase = "validation";
-    result.assembly = await validateCloudAssembly(assembly, {stack: binding.stack, region: binding.config.region});
+    result.assembly = await validateCloudAssembly(assembly, {stack: binding.stack, region: binding.config.region}, binding.config);
 
     result.phase = "access";
     const identity = await execute("aws", ["sts", "get-caller-identity", "--output", "json"], 60_000, host);

@@ -172,6 +172,7 @@ export async function teardownBinding(state: {root: string; pkg: ProcessPackage;
   }
   const parsed = parseResourceArn(String(options.orphanResource));
   if (!parsed) throw new Error(`Only these resource types can be deleted as orphans: ${DELETABLE_RESOURCE_TYPES.join(", ")}. Remove any other resource by hand.`);
+  if (!config.resource_allowlist.includes(parsed.type)) throw new Error(`${parsed.type} is not on the package resource allowlist; remove it by hand`);
   if (parsed.region !== config.region) throw new Error(`Orphan resource is not in the package region ${config.region}`);
   return {...base, config, awsProfile: options.awsProfile, target: {kind: "orphan-resource", arn: String(options.orphanResource)}};
 }

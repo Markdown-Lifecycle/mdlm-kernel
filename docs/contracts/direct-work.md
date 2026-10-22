@@ -213,7 +213,10 @@ A package declaring `aws-cdk-deployment@1` binds its deployment record type
 (`type`), the product type it deploys (`implementation_type`) and one `deployment`
 action (`action`). That action's `fixed_payload` for the record type pins the
 synth image digest, host CDK CLI version, CDK app path, region, APM project, stack
-slots, output allowlist, endpoint output, version probe path and maximum lifetime.
+slots, output allowlist, endpoint output, version probe path, maximum lifetime
+and `resource_allowlist`: the top-level resource types the template may contain,
+drawn from `AWS::Lambda::Function`, `AWS::ApiGatewayV2::Api`,
+`AWS::DynamoDB::Table` and `AWS::Logs::LogGroup`.
 The record type must manage `outcome`, `receipt`, `stack`, `outputs`, `endpoint`,
 `deployed_version` and `expires_at`.
 
@@ -223,7 +226,19 @@ container with no credentials, with `MDLM_PRODUCT_COMMIT` and `MDLM_STACK_NAME`
 set. It then refuses the cloud assembly unless it holds exactly one stack named
 for the slot and only file assets already materialized inside the assembly: no
 symlinks, `executable` sources, Docker image assets, legacy asset metadata, nested
-assemblies or paths outside it. Only then does the host CDK CLI run
+assemblies or paths outside it. It also refuses a template that breaks the
+template policy, naming every broken rule: a `Transform` or `Fn::Transform`
+(expanded after the check); a resource type off the package
+allowlist; a custom resource (`Custom::*`, `AWS::CloudFormation::CustomResource`);
+an API stage, route or integration, or a Lambda permission, that does not
+reference an allowlisted parent in the same stack (`AWS::CDK::Metadata` is
+allowed); a Lambda function without reserved concurrency of 10 or less or without
+an explicit log group in the stack; an API that is not HTTP, uses quick create (`Target`) or has no stage
+setting `ThrottlingBurstLimit` and `ThrottlingRateLimit`; a log group without
+1-day retention; a table without `PAY_PER_REQUEST` billing; a `DeletionPolicy` or
+`UpdateReplacePolicy` other than `Delete` (explicit `Delete` for tables and log
+groups) or enabled deletion protection; tags that are not literal, or any `mdlm:` tag on a resource or the stack, since the kernel applies
+those; and a stack outside the slot pool. Only then does the host CDK CLI run
 `cdk deploy --app <cdk.out>` with `AWS_PROFILE` set to the operator's APM profile
 and no other inherited AWS variables. A slot that already holds a stack is
 refused. The receipt records the source and synth identities, template and asset
