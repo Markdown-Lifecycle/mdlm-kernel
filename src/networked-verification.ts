@@ -80,13 +80,14 @@ const server = net.createServer(client => {
     client.pause();
     const openedAt = new Date().toISOString(), line = head.subarray(0, head.indexOf("\r\n")).toString("latin1");
     const match = /^CONNECT ([^\s:]+|\[[^\]]+\]):(\d+) HTTP\/1\.[01]$/.exec(line);
-    const host = match ? match[1].replace(/^\[|\]$/g, "") : "", port = match ? Number(match[2]) : 0;
+    // Compare in URL.hostname form (lowercase, IPv6 bracketed), as the allowlist is built.
+    const host = match ? match[1].toLowerCase() : "", port = match ? Number(match[2]) : 0;
     if (!match || !allow.has(host + ":" + port)) {
       client.end(match ? "HTTP/1.1 403 Forbidden\r\n\r\n" : "HTTP/1.1 405 Method Not Allowed\r\n\r\n");
       return log({host, port, allowed: false, bytesSent: 0, bytesReceived: 0, openedAt, closedAt: openedAt});
     }
     let sent = 0, received = 0, connected = false, done = false;
-    const upstream = net.connect(port, host, () => {
+    const upstream = net.connect(port, host.replace(/^\[|\]$/g, ""), () => {
       connected = true;
       client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       const rest = head.subarray(end + 4);

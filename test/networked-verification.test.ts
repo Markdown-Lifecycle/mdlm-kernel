@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import type { DatumEnvelope, ProcessPackage } from "../src/index.js";
-import { verificationDeployment } from "../src/networked-verification.js";
+import { parseEndpoint, verificationDeployment } from "../src/networked-verification.js";
 import { requireCoherentVerificationResult, runVerificationReceipt, type VerificationBinding } from "../src/verification-receipt.js";
 
 const python = "python@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a";
@@ -31,6 +31,9 @@ it("selects only a completed deployment of the product's exact commit", () => {
   expect(() => verificationDeployment(pkg, data, datum("PRD-9-r00001", "PRD", {source_commit: commit}), activity("DPL-1-r00001"))).toThrow("does not deploy product commit");
   expect(() => verificationDeployment(pkg, data, reselected, activity("DPL-1-r00001", "DPL-2-r00001"))).toThrow("at most one");
   expect(() => verificationDeployment(pkg, data, reselected, activity("PRD-1-r00001"))).toThrow("exact DPL revision");
+  // The allowlist uses URL.hostname form, which the proxy compares CONNECT targets against.
+  expect(parseEndpoint("https://[2001:DB8::1]/")).toEqual({host: "[2001:db8::1]", port: 443});
+  expect(parseEndpoint("http://ABC.example:8080")).toEqual({host: "abc.example", port: 8080});
   expect(() => verificationDeployment({kernelCapabilities: {}} as unknown as ProcessPackage, data, reselected, activity("DPL-1-r00001"))).toThrow("aws-cdk-deployment@1");
 });
 
