@@ -215,6 +215,7 @@ test("selected guidance states effective authority without changing proposal evi
       const file = path.join(root, `${id}.json`);
       cli("proposal", "draft", id, "--operation", `draft-${id}`, "--output", file);
       const proposal = JSON.parse(await fs.readFile(file, "utf8"));
+      // An independently reviewed authoring action keeps the snapshot rule, so its draft has no review binding (ADR 0011).
       expect(proposal).toEqual({operation: `draft-${id}`, action: guidance.action, package: guidance.package, snapshot: guidance.snapshot, inputs: guidance.inputs, candidates: guidance.candidates,
         ...(authority?.kind === "stakeholder" ? {evidence: {authority: [authority.name]}} : {})});
     }
@@ -337,7 +338,7 @@ test("saved review context provides exact handoff metadata without replacing exp
     const reviewDraft = cli("proposal", "draft", action, subject, "--operation", "draft-review", "--output", "review-draft.json");
     expect(reviewDraft.status, reviewDraft.source).toBe(0);
     const reviewProposal = JSON.parse(await fs.readFile(path.join(repository,"review-draft.json"),"utf8"));
-    expect(reviewProposal).toEqual({operation:"draft-review",action,subject,package:reviewGuidance.package,snapshot:reviewGuidance.snapshot,inputs:reviewGuidance.inputs,candidates:reviewGuidance.candidates});
+    expect(reviewProposal).toEqual({operation:"draft-review",action,subject,package:reviewGuidance.package,snapshot:reviewGuidance.snapshot,reviewBinding:expect.stringMatching(/^sha256:[a-f0-9]{64}$/),inputs:reviewGuidance.inputs,candidates:reviewGuidance.candidates});
     expect(reviewProposal.candidates[0].links).not.toHaveLength(0);
     expect(reviewProposal).not.toHaveProperty("evidence");
     const args = ["review", "context", action, subject];

@@ -245,6 +245,92 @@
       "contextSha256": "26f8c41390d2498c8e0156f21db939a9148bdf7a2210de59ade6f5433f489cb1"
     }
   ],
+  "reviewBinding": [
+    {
+      "name": "review context in one repository, snapshot dropped",
+      "repository": "git-commit:3333333333333333333333333333333333333333",
+      "context": {
+        "contract": "mdlm-direct-review-context@1",
+        "snapshot": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "package": {
+          "reference": "demo@1.0.0",
+          "digest": "sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+          "language": "mdlm-expression@1"
+        },
+        "action": {
+          "kind": "action-definition",
+          "id": "review",
+          "version": 1,
+          "capability": "review",
+          "types": [
+            "REV"
+          ],
+          "prompt_ref": "prompts/review.md@1",
+          "when": {
+            "source": "true",
+            "contract": {
+              "definitionPath": "/srv/mdlm/lane-a/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when"
+            }
+          }
+        },
+        "inputs": {
+          "subject": [
+            "RQS-0123456789AB-r00001"
+          ]
+        },
+        "records": [],
+        "payloadSchemas": {
+          "REV": {
+            "type": "object"
+          }
+        }
+      },
+      "preimage": "{\"context\":{\"action\":{\"capability\":\"review\",\"id\":\"review\",\"kind\":\"action-definition\",\"prompt_ref\":\"prompts/review.md@1\",\"types\":[\"REV\"],\"version\":1,\"when\":{\"contract\":{\"definitionPath\":\"/srv/mdlm/lane-a/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when\"},\"source\":\"true\"}},\"contract\":\"mdlm-direct-review-context@1\",\"inputs\":{\"subject\":[\"RQS-0123456789AB-r00001\"]},\"package\":{\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\",\"reference\":\"demo@1.0.0\"},\"payloadSchemas\":{\"REV\":{\"type\":\"object\"}},\"records\":[]},\"contract\":\"mdlm-review-binding@1\",\"repository\":\"git-commit:3333333333333333333333333333333333333333\"}",
+      "reviewBinding": "8fe633adb6235e5470d2a93d0e565377ee1146c157258884a9a6240c64dfaddc"
+    },
+    {
+      "name": "same context at a later snapshot",
+      "repository": "git-commit:3333333333333333333333333333333333333333",
+      "context": {
+        "contract": "mdlm-direct-review-context@1",
+        "snapshot": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "package": {
+          "reference": "demo@1.0.0",
+          "digest": "sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be",
+          "language": "mdlm-expression@1"
+        },
+        "action": {
+          "kind": "action-definition",
+          "id": "review",
+          "version": 1,
+          "capability": "review",
+          "types": [
+            "REV"
+          ],
+          "prompt_ref": "prompts/review.md@1",
+          "when": {
+            "source": "true",
+            "contract": {
+              "definitionPath": "/srv/mdlm/lane-a/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when"
+            }
+          }
+        },
+        "inputs": {
+          "subject": [
+            "RQS-0123456789AB-r00001"
+          ]
+        },
+        "records": [],
+        "payloadSchemas": {
+          "REV": {
+            "type": "object"
+          }
+        }
+      },
+      "preimage": "{\"context\":{\"action\":{\"capability\":\"review\",\"id\":\"review\",\"kind\":\"action-definition\",\"prompt_ref\":\"prompts/review.md@1\",\"types\":[\"REV\"],\"version\":1,\"when\":{\"contract\":{\"definitionPath\":\"/srv/mdlm/lane-a/.lifecycle/packages/demo@1.0.0/actions/review.yaml#when\"},\"source\":\"true\"}},\"contract\":\"mdlm-direct-review-context@1\",\"inputs\":{\"subject\":[\"RQS-0123456789AB-r00001\"]},\"package\":{\"digest\":\"sha256:0d54227c7e22d18be603441b5baad0dfa6c20b1c19af537f75237d0584ea45be\",\"language\":\"mdlm-expression@1\",\"reference\":\"demo@1.0.0\"},\"payloadSchemas\":{\"REV\":{\"type\":\"object\"}},\"records\":[]},\"contract\":\"mdlm-review-binding@1\",\"repository\":\"git-commit:3333333333333333333333333333333333333333\"}",
+      "reviewBinding": "8fe633adb6235e5470d2a93d0e565377ee1146c157258884a9a6240c64dfaddc"
+    }
+  ],
   "reviewBytes": [
     {
       "name": "verdict or proposal bytes",

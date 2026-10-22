@@ -1,10 +1,10 @@
 import { installedProcessPackageRoot } from "../src/installed-process-package.js";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { expect, test, vi } from "vitest";
-import { registerExternalReview, requireExternalReview } from "../src/external-review.js";
-import { validateDirectAuthority } from "../src/direct-authority.js";
+import { registerExternalReview, requireExternalReview, reviewDigest, reviewPacketDigest } from "../src/external-review.js";
+import { bindsReviewContext, validateDirectAuthority } from "../src/direct-authority.js";
 import type { DirectReviewContext } from "../src/direct-review-context.js";
 import type { DirectContext, DirectProposal } from "../src/direct-contract.js";
 
@@ -20,15 +20,26 @@ test("review registration preserves exact verdict bytes and refuses changed cont
   vi.stubEnv("MDLM_REVIEW_REGISTRY",registry);vi.stubEnv("MDLM_REVIEW_REGISTRAR","1");
   const source = JSON.stringify({operation:"review-1",candidates});
   const verdict = JSON.stringify({candidates});
+  const id = "git-commit:fixture";
   try {
-    await expect(requireExternalReview(repository,"review-1",reviewContext,source)).rejects.toThrow();
-    const registered = await registerExternalReview(repository,"review-1",reviewContext,verdict,source);
-    expect(await requireExternalReview(repository,"review-1",reviewContext,source)).toEqual(registered);
-    await expect(requireExternalReview(repository,"review-1",{...reviewContext,snapshot:"changed"},source)).rejects.toThrow("contextSha256");
-    await expect(requireExternalReview(repository,"review-1",reviewContext,source+"\n")).rejects.toThrow("proposalSha256");
-    await expect(registerExternalReview(repository,"review-2",reviewContext,JSON.stringify({candidates:[]}),source)).rejects.toThrow("exact verdict");
+    await expect(requireExternalReview(repository,"review-1",reviewContext,id,source)).rejects.toThrow();
+    const registered = await registerExternalReview(repository,"review-1",reviewContext,id,verdict,source);
+    expect(registered.contract).toBe("mdlm-registered-review@3");
+    expect(await requireExternalReview(repository,"review-1",reviewContext,id,source)).toEqual(registered);
+    // ADR 0011: the binding ignores the whole-lifecycle snapshot but not the review's own context or repository.
+    expect(await requireExternalReview(repository,"review-1",{...reviewContext,snapshot:"changed"},id,source)).toEqual(registered);
+    await expect(requireExternalReview(repository,"review-1",{...reviewContext,inputs:{subject:["RQS-exact-r00002"]}},id,source)).rejects.toThrow("contextSha256");
+    await expect(requireExternalReview(repository,"review-1",reviewContext,"git-commit:other",source)).rejects.toThrow("contextSha256");
+    await expect(requireExternalReview(repository,"review-1",reviewContext,id,source+"\n")).rejects.toThrow("proposalSha256");
+    await expect(registerExternalReview(repository,"review-2",reviewContext,id,JSON.stringify({candidates:[]}),source)).rejects.toThrow("exact verdict");
+    // A registration written by an earlier kernel (@2) still binds the whole context, snapshot included.
+    const legacy = {contract:"mdlm-registered-review@2",operation:"review-1",contextSha256:reviewPacketDigest(reviewContext),verdictSha256:reviewDigest(verdict),proposalSha256:reviewDigest(source)};
+    const file = path.join(registry,`${reviewDigest(await realpath(repository))}-review-1.json`);
+    await writeFile(file,`${JSON.stringify({...legacy,verdict})}\n`);
+    expect(await requireExternalReview(repository,"review-1",reviewContext,id,source)).toEqual(legacy);
+    await expect(requireExternalReview(repository,"review-1",{...reviewContext,snapshot:"changed"},id,source)).rejects.toThrow("contextSha256");
     vi.stubEnv("MDLM_REVIEW_REGISTRAR","0");
-    await expect(registerExternalReview(repository,"review-2",reviewContext,verdict,source)).rejects.toThrow("manager");
+    await expect(registerExternalReview(repository,"review-2",reviewContext,id,verdict,source)).rejects.toThrow("manager");
   } finally {vi.unstubAllEnvs();await rm(root,{recursive:true,force:true});}
 });
 
@@ -39,6 +50,17 @@ test("stakeholder decisions require exact supplied authority and cannot borrow r
   await expect(validateDirectAuthority(context,proposal,JSON.stringify(proposal))).rejects.toThrow("explicit authority");
   const wrong = {...proposal,evidence:{authority:["reviewer"]}};
   await expect(validateDirectAuthority(context,wrong,JSON.stringify(wrong))).rejects.toThrow("differs");
+  // An independently reviewed authoring action generates data from the whole repository, so it can't skip the snapshot.
+  const authoring = {...context,action:{...action,capability:"requirements" as const}};
+  const bound = {...proposal,action:"review@1",reviewBinding:`sha256:${"0".repeat(64)}`};
+  await expect(validateDirectAuthority(authoring,bound,JSON.stringify(bound))).rejects.toThrow("Only an independently reviewed review action");
+  // So does a review action that also authors requirements: their membership is selected from the whole repository.
+  const traced = {...context,pkg:{...pkg,kernelCapabilities:{"requirement-trace@2":{type:"RQS",requirement_type:"REQ",review_type:"REV"}}} as DirectContext["pkg"]};
+  const reviewing = {...traced,action:{...action,types:["REV","RQS"]}};
+  await expect(validateDirectAuthority(reviewing,bound,JSON.stringify(bound))).rejects.toThrow("Only an independently reviewed review action");
+  expect(bindsReviewContext(reviewing)).toBe(false);
+  expect(bindsReviewContext({...traced,action})).toBe(true);
+  expect(bindsReviewContext({...context,action})).toBe(false);
   const borrowed = {...proposal,evidence:{authority:["stakeholder"],review:{proof:"reviewer"}}};
   await expect(validateDirectAuthority(context,borrowed,JSON.stringify(borrowed))).rejects.toThrow("cannot supply");
   const supplied = {...proposal,evidence:{authority:["stakeholder"]}};

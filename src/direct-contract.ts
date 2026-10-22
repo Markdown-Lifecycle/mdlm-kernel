@@ -35,6 +35,8 @@ export interface DirectProposal {
   action: string;
   package: DirectPackageIdentity;
   snapshot: string;
+  /** Review actions: `sha256:` + the review binding (ADR 0011), checked in place of the snapshot. */
+  reviewBinding?: string;
   subject?: string;
   inputs?: Record<string, string[]>;
   candidates: DirectCandidate[];
@@ -45,6 +47,8 @@ export interface DirectContext {
   pkg: ProcessPackage;
   package: DirectPackageIdentity;
   snapshot: string;
+  /** Lifecycle repository identity, bound by independent reviews. */
+  repository?: string;
   data: DatumEnvelope[];
   /** Internal authenticated upgrade history; never supplied by a proposal. */
   authoringSelections?: readonly ProcessSelection[];
