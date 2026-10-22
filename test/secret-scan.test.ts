@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
 import type { DockerVerificationResult, VerificationCaseResult } from "../src/docker-verification.js";
-import { refuseSecretResult, scanForSecrets, scanStoredValue, SECRET_PATTERNS } from "../src/secret-scan.js";
+import { requireCoherentDeployment, type DeploymentBinding, type DeploymentResult } from "../src/aws-cdk-deployment.js";
+import { refuseSecretResult, refuseSecretValues, scanForSecrets, scanStoredValue, SECRET_PATTERNS } from "../src/secret-scan.js";
 
 // Fixture secrets are assembled at runtime so no literal credential is committed.
 const join = (...parts: string[]) => parts.join("");
@@ -71,6 +72,26 @@ test("a match refuses the result, names the class and field, and stores nothing 
   expect(refused.rawReportBase64).toBe("");
   const stored = JSON.stringify(refused);
   for (const leaked of [secret, "PRIVATE KEY", Buffer.from(secret).toString("base64")]) expect(stored).not.toContain(leaked);
+});
+
+test("a leaked stack output is dropped with its endpoint copies, leaving a coherent error deployment", async () => {
+  const commit = "a".repeat(40), stackId = "arn:aws:cloudformation:us-east-1:123456789012:stack/mdlm-demo-credit/fake";
+  const binding = {sourceCommit: commit, stack: "mdlm-demo-credit", config: {region: "us-east-1", output_allowlist: ["ApiEndpoint", "Name"], endpoint_output: "ApiEndpoint"}} as unknown as DeploymentBinding;
+  const deployment = (endpoint: string): DeploymentResult => ({outcome: "pass", phase: "probe", deployAttempted: true, startedAt: "2026-10-21T00:00:00.000Z", finishedAt: "2026-10-21T00:00:01.000Z",
+    access: {apmProject: "mdlm-demo", callerArn: "arn:aws:sts::123456789012:assumed-role/apm-mdlm-demo/session", account: "123456789012"},
+    deploy: {exitCode: 0, stdoutBase64: Buffer.from(`deployed ${sha256("x")}\n`).toString("base64"), stderrBase64: ""},
+    stack: {account: "123456789012", region: "us-east-1", name: "mdlm-demo-credit", id: stackId, status: "CREATE_COMPLETE", lastUpdatedTime: "2026-10-21T00:00:00Z"},
+    outputs: {ApiEndpoint: endpoint, Name: "demo"}, endpoint, deployedVersion: commit, expiresAt: "2026-10-21T02:00:00.000Z",
+    probe: {url: `${endpoint}version`, status: 200, expectedVersion: commit, matched: true, bodyBase64: Buffer.from(commit).toString("base64")}});
+  const clean = deployment("https://api.example/");
+  expect(refuseSecretValues(clean, "the product or its CDK app")).toBe(clean);
+  const result = deployment(`https://api.example/${hits["aws-access-key-id"]}/`);
+  const refused = refuseSecretValues(result, "the product or its CDK app");
+  expect(refused.secretFindings!.map(finding => finding.field)).toEqual(["outputs.ApiEndpoint", "endpoint", "probe.url"]);
+  expect(refused).toMatchObject({outcome: "error", outputs: {Name: "demo"}, deploy: result.deploy, stack: result.stack, probe: {status: 200, bodyBase64: result.probe!.bodyBase64}});
+  expect([refused.endpoint, refused.probe!.url, refused.outputs!.ApiEndpoint]).toEqual([undefined, undefined, undefined]);
+  expect(JSON.stringify(refused)).not.toContain(hits["aws-access-key-id"]);
+  await expect(requireCoherentDeployment(binding, refused)).resolves.toBeUndefined();
 });
 
 test("public execution refuses a receipt whose captured output contains an AWS key", async () => {

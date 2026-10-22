@@ -54,7 +54,10 @@ if (args[0] === "synth") {
   fs.writeFileSync(path.join(state, "synth-env.json"), JSON.stringify(process.env));
   const out = args[args.indexOf("--output") + 1], {scenario, bake} = JSON.parse(fs.readFileSync("fixture.json", "utf8"));
   const stack = process.env.MDLM_STACK_NAME, write = (name, value) => { fs.mkdirSync(path.dirname(path.join(out, name)), {recursive: true}); fs.writeFileSync(path.join(out, name), typeof value === "string" ? value : JSON.stringify(value)); };
-  write("asset.abc/index.js", "export const version = " + JSON.stringify(bake ?? process.env.MDLM_PRODUCT_COMMIT) + ";\n");
+  // The leak scenario's app prints a key and bakes it into the version the probe returns.
+  const leaked = scenario === "leak" ? " AKIA" + "LEAKEDKEY0000000" : "";
+  if (leaked) console.error("debug" + leaked);
+  write("asset.abc/index.js", "export const version = " + JSON.stringify((bake ?? process.env.MDLM_PRODUCT_COMMIT) + leaked) + ";\n");
   write(stack + ".template.json", {Resources: {}, Outputs: {ApiEndpoint: {Value: "x"}, Secret: {Value: "y"}}});
   const source = scenario === "executable" ? {executable: ["sh", "-c", "touch /tmp/pwned"]} : {path: scenario === "escape" ? "../outside" : "asset.abc", packaging: "zip"};
   write((scenario === "nested" ? "nested/" : "") + stack + ".assets.json", {version: "36.0.0", files: {abc: {source, destinations: {}}}, dockerImages: scenario === "docker" ? {img: {source: {directory: "asset.abc"}, destinations: {}}} : {}});
@@ -75,7 +78,7 @@ if (args[0] === "deploy") {
   const endpoint = JSON.parse(fs.readFileSync(path.join(state, "config.json"), "utf8")).endpoint;
   fs.mkdirSync(path.join(state, "stacks"), {recursive: true});
   fs.writeFileSync(path.join(state, "stacks", stack + ".json"), JSON.stringify({StackId: "arn:aws:cloudformation:us-east-1:123456789012:stack/" + stack + "/fake", StackName: stack, StackStatus: "CREATE_COMPLETE", CreationTime: "2026-10-21T00:00:00Z", Outputs: [{OutputKey: "ApiEndpoint", OutputValue: endpoint}, {OutputKey: "Secret", OutputValue: "not-allowlisted"}]}));
-  console.log("deployed " + stack); process.exit(0);
+  console.log("deployed " + stack + " version " + baked); process.exit(0);
 }
 process.exit(2);
 `;
@@ -155,7 +158,7 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     await fs.mkdir(path.join(product, "infra"), {recursive: true});
     git(product, "init", "-q");
     const products: Record<string, {commit: string; revision: string}> = {};
-    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["nested", {}], ["mismatch", {bake: "0".repeat(40)}]] as const) {
+    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["nested", {}], ["mismatch", {bake: "0".repeat(40)}], ["leak", {}]] as const) {
       await fs.writeFile(path.join(product, "infra/fixture.json"), JSON.stringify({scenario, ...extra}));
       git(product, "add", "."); git(product, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", scenario);
       const commit = git(product, "rev-parse", "HEAD"), proposal = await draft("record-product", `product-${scenario}`);
@@ -253,6 +256,28 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     misattributed.evidence = {receipt: (await cli("deployment", "settlement", "deploy-mismatch")).json.value.evidence};
     await fs.writeFile(path.join(root, "misattributed.json"), JSON.stringify(misattributed));
     expect((await cli("proposal", "submit", path.join(root, "misattributed.json"))).json.diagnostics[0].message).toContain("does not match this exact product");
+
+    // A secret in synth output, host CDK CLI output or the probe body refuses the receipt.
+    // Only the matching streams are emptied, so the record still says what reached AWS.
+    const secret = "AKIA" + "LEAKEDKEY0000000";
+    const leakRun = await deploy("leak", "deploy-leak", "mdlm-demo-dry-1");
+    const leak = leakRun.json.value.receipt.result;
+    expect([leak.outcome, leak.phase, leak.deployAttempted, leak.deploy.exitCode, leak.stack.name, leak.deployedVersion]).toEqual(["error", "probe", true, 0, "mdlm-demo-dry-1", products.leak!.commit]);
+    expect(leak.secretFindings).toEqual(expect.arrayContaining(["synth.stderrBase64", "deploy.stdoutBase64", "probe.bodyBase64"].map(field => ({pattern: "aws-access-key-id", field, offset: expect.any(Number)}))));
+    expect(leak.secretFindings).toHaveLength(3);
+    expect([leak.synth.stderrBase64, leak.deploy.stdoutBase64, leak.probe.bodyBase64]).toEqual(["", "", ""]);
+    expect(leak.diagnostic).toContain("aws-access-key-id in deploy.stdoutBase64");
+    const leakFile = await fs.readFile(path.join(repository, ".lifecycle/work/deployment/deploy-leak/1-receipt.json"), "utf8");
+    for (const copy of [JSON.stringify(leakRun.json), git(repository, "cat-file", "blob", leakRun.json.value.oid), leakFile]) {
+      expect(copy).not.toContain(secret);
+      expect(copy).not.toContain(Buffer.from(secret).toString("base64").slice(0, 16));
+    }
+    // The refused receipt still publishes as an error deployment, so teardown can follow it.
+    const leakRecord = await draft("deploy-product", "record-leak");
+    Object.assign(leakRecord.candidates[0].payload, {title: "Leaking deployment"});
+    leakRecord.candidates[0].links = [{type: "deploys", target: products.leak!.revision}];
+    leakRecord.evidence = {receipt: leakRun.json.value.evidence};
+    expect((await cli("show", await submit(leakRecord))).json.lifecycleDatum.datum.payload).toMatchObject({outcome: "error", stack: {name: "mdlm-demo-dry-1"}});
 
     // An interrupted attempt leaves its started marker and is never re-run.
     const binding = (await cli("deployment", "settlement", "deploy-ok")).json.value.receipt.binding;

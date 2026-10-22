@@ -51,8 +51,29 @@ export function refuseSecretResult(result: DockerVerificationResult): DockerVeri
     const value = cleared(refused[key]);
     if (value === undefined) delete refused[key]; else refused[key] = value;
   }
-  const summary = findings.map(finding => `${finding.pattern} in ${finding.field} at byte ${finding.offset}`).join("; ");
   const kept = typeof refused.diagnostic === "string" && refused.diagnostic ? ` ${refused.diagnostic}` : "";
-  return {...refused as unknown as DockerVerificationResult, outcome: "error", secretFindings: findings,
-    diagnostic: `Receipt refused: captured output contains secret patterns (${summary}). Fix the leak in the product or verifier; MDLM does not store or redact it.${kept}`};
+  return {...refused as unknown as DockerVerificationResult, outcome: "error", secretFindings: findings, diagnostic: refusal(findings, "the product or verifier", kept)};
+}
+
+const refusal = (findings: SecretFinding[], source: string, kept: string) =>
+  `Receipt refused: captured output contains secret patterns (${findings.map(finding => `${finding.pattern} in ${finding.field} at byte ${finding.offset}`).join("; ")}). Fix the leak in ${source}; MDLM does not store or redact it.${kept}`;
+
+// Base64 streams keep their shape as ""; any other matching string is dropped.
+function withoutMatches(value: unknown, field: string, matched: Set<string>): unknown {
+  const child = (key: string | number) => Array.isArray(value) ? `${field}[${key}]` : field ? `${field}.${key}` : String(key);
+  if (Array.isArray(value)) return value.map((item, index) => matched.has(child(index)) ? "" : withoutMatches(item, child(index), matched));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).flatMap(([key, item]): [string, unknown][] =>
+    !matched.has(child(key)) ? [[key, withoutMatches(item, child(key), matched)]] : key.endsWith("Base64") ? [[key, ""]] : []));
+}
+
+/** Refuse a deployment result that contains a secret pattern before it is stored.
+ * Only the matching values are emptied, so the recorded stack, exit codes and
+ * attempt state still say what happened in AWS and teardown can follow. */
+export function refuseSecretValues<T extends {outcome: string; diagnostic?: string; secretFindings?: SecretFinding[]}>(result: T, source: string): T {
+  const findings = scanStoredValue(result);
+  if (!findings.length) return result;
+  const refused = withoutMatches(result, "", new Set(findings.map(finding => finding.field))) as T;
+  const kept = refused.diagnostic ? ` ${refused.diagnostic}` : "";
+  return {...refused, outcome: "error", secretFindings: findings, diagnostic: refusal(findings, source, kept)};
 }
