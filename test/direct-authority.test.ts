@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { expect, test, vi } from "vitest";
 import { registerExternalReview, requireExternalReview, reviewDigest, reviewPacketDigest } from "../src/external-review.js";
-import { validateDirectAuthority } from "../src/direct-authority.js";
+import { bindsReviewContext, validateDirectAuthority } from "../src/direct-authority.js";
 import type { DirectReviewContext } from "../src/direct-review-context.js";
 import type { DirectContext, DirectProposal } from "../src/direct-contract.js";
 
@@ -54,6 +54,13 @@ test("stakeholder decisions require exact supplied authority and cannot borrow r
   const authoring = {...context,action:{...action,capability:"requirements" as const}};
   const bound = {...proposal,action:"review@1",reviewBinding:`sha256:${"0".repeat(64)}`};
   await expect(validateDirectAuthority(authoring,bound,JSON.stringify(bound))).rejects.toThrow("Only an independently reviewed review action");
+  // So does a review action that also authors requirements: their membership is selected from the whole repository.
+  const traced = {...context,pkg:{...pkg,kernelCapabilities:{"requirement-trace@2":{type:"RQS",requirement_type:"REQ",review_type:"REV"}}} as DirectContext["pkg"]};
+  const reviewing = {...traced,action:{...action,types:["REV","RQS"]}};
+  await expect(validateDirectAuthority(reviewing,bound,JSON.stringify(bound))).rejects.toThrow("Only an independently reviewed review action");
+  expect(bindsReviewContext(reviewing)).toBe(false);
+  expect(bindsReviewContext({...traced,action})).toBe(true);
+  expect(bindsReviewContext({...context,action})).toBe(false);
   const borrowed = {...proposal,evidence:{authority:["stakeholder"],review:{proof:"reviewer"}}};
   await expect(validateDirectAuthority(context,borrowed,JSON.stringify(borrowed))).rejects.toThrow("cannot supply");
   const supplied = {...proposal,evidence:{authority:["stakeholder"]}};

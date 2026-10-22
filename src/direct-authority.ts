@@ -3,6 +3,8 @@ import type { DirectContext, DirectProposal } from "./direct-contract.js";
 import { buildDirectReviewContext } from "./direct-review-context.js";
 import { registerExternalReview, requireExternalReview, reviewBinding, type ExternalReviewProof } from "./external-review.js";
 import type { DirectReviewContext } from "./direct-review-context.js";
+import { requirementTraceBinding } from "./requirement-trace.js";
+import { independentBinding } from "./independent-verification.js";
 export { buildDirectReviewContext } from "./direct-review-context.js";
 
 export interface DirectAuthorityEvidence {
@@ -11,11 +13,14 @@ export interface DirectAuthorityEvidence {
   source: "registered-review" | "authority-supply";
   review?: ExternalReviewProof;
 }
-/** Only review outputs depend on nothing beyond their review context; authoring actions keep the snapshot rule. */
-export const bindsReviewContext = (action: DirectContext["action"]): boolean => action.capability === "review" && action.authority?.kind === "independent-review";
+/** Only review outputs derive nothing beyond their review context; any authoring output type keeps the snapshot rule. */
+export function bindsReviewContext({pkg, action}: Pick<DirectContext, "pkg" | "action">): boolean {
+  const reviewTypes = new Set([requirementTraceBinding(pkg)?.review_type, independentBinding(pkg)?.review_type].filter(Boolean));
+  return action.capability === "review" && action.authority?.kind === "independent-review" && action.types.every(type => reviewTypes.has(type));
+}
 /** A review binding replaces only the snapshot comparison; every other exact selection still applies (ADR 0011). */
 function checkContext(context: DirectContext, proposal: DirectProposal): void {
-  if (proposal.reviewBinding !== undefined && !bindsReviewContext(context.action)) throw new Error("Only an independently reviewed review action can bind a review context");
+  if (proposal.reviewBinding !== undefined && !bindsReviewContext(context)) throw new Error("Only an independently reviewed review action can bind a review context");
   if (proposal.action !== `${context.action.id}@${context.action.version}` || (proposal.reviewBinding === undefined && proposal.snapshot !== context.snapshot) || !isDeepStrictEqual(proposal.package, context.package) || proposal.subject !== context.subject || (proposal.inputs !== undefined && !isDeepStrictEqual(proposal.inputs, context.inputs))) throw new Error("Review proposal differs from its current exact action, package, snapshot or inputs");
 }
 function repositoryOf(context: DirectContext): string {
