@@ -78,9 +78,9 @@ export function orphanReason(tags: Record<string, string>, registry: DeploymentR
 export interface Orphan {kind: "stack" | "resource"; arn: string; slot?: string; status?: string; deployment?: string; reason: string}
 export interface OrphanReport {checkedAt: string; orphans: Orphan[]}
 
-async function taggedResources(host: Host, region: string, filters: Record<string, string>): Promise<{arn: string; tags: Record<string, string>}[]> {
+async function taggedResources(host: Host, region: string, filters: Record<string, string>, arns?: string[]): Promise<{arn: string; tags: Record<string, string>}[]> {
   const query = await execute("aws", ["resourcegroupstaggingapi", "get-resources", "--region", region, "--output", "json",
-    "--tag-filters", ...Object.entries(filters).map(([key, value]) => `Key=${key},Values=${value}`)], 120_000, host);
+    ...(arns ? ["--resource-arn-list", ...arns] : ["--tag-filters", ...Object.entries(filters).map(([key, value]) => `Key=${key},Values=${value}`)])], 120_000, host);
   if (query.problem || query.exitCode !== 0) throw new Error(hostFailure("aws resourcegroupstaggingapi get-resources", query));
   const mappings = (JSON.parse(query.stdout.toString("utf8")) as {ResourceTagMappingList?: {ResourceARN?: string; Tags?: unknown}[]}).ResourceTagMappingList ?? [];
   return mappings.map(m => ({arn: String(m.ResourceARN), tags: stackTags(m)}));
@@ -110,7 +110,10 @@ export async function findOrphans(config: DeploymentConfig, registry: Deployment
     if (stack && stack.StackStatus !== "DELETE_COMPLETE") continue;
     for (const entry of known.inventory.filter(entry => TOP_LEVEL[entry.type])) {
       const arn = TOP_LEVEL[entry.type]!.build(config.region, known.account, entry.physicalId);
-      if (!orphans.some(o => o.arn === arn) && await resourceExists(host, config.region, entry.type, entry.physicalId)) orphans.push({kind: "resource", arn, deployment, reason: `an inventoried resource of deployment '${deployment}' outlived its stack`});
+      if (orphans.some(o => o.arn === arn) || !await resourceExists(host, config.region, entry.type, entry.physicalId)) continue;
+      // A reused physical name may now belong to another deployment; a resource carrying a deployment tag is judged by its tags alone.
+      if ((await taggedResources(host, config.region, {}, [arn])).some(r => r.tags["mdlm:deployment"])) continue;
+      orphans.push({kind: "resource", arn, deployment, reason: `an inventoried resource of deployment '${deployment}' outlived its stack`});
     }
   }
   return {checkedAt, orphans};

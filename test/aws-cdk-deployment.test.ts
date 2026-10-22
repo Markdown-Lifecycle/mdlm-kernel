@@ -114,6 +114,10 @@ if (args[0] === "cloudformation") {
   }
   if (args[1] === "wait") { if (stack.StackStatus === "DELETE_COMPLETE") done(); console.error("Waiter StackDeleteComplete failed: Waiter encountered a terminal failure state"); process.exit(255); }
 }
+if (args[0] === "resourcegroupstaggingapi" && args[1] === "get-resources" && args.includes("--resource-arn-list")) {
+  const wanted = args.slice(args.indexOf("--resource-arn-list") + 1).filter(arg => arg.startsWith("arn:"));
+  done({ResourceTagMappingList: db.resources.filter(r => wanted.includes(r.arn) && r.tags).map(r => ({ResourceARN: r.arn, Tags: r.tags}))});
+}
 if (args[0] === "resourcegroupstaggingapi" && args[1] === "get-resources") {
   const filters = args.filter(arg => arg.startsWith("Key=")).map(arg => /^Key=([^,]+),Values=(.*)$/.exec(arg));
   const tagged = [...db.stacks.filter(s => s.StackStatus !== "DELETE_COMPLETE").map(s => ({arn: s.StackId, tags: s.Tags})), ...db.resources.filter(r => r.arn && r.tags)];
@@ -405,6 +409,10 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     // and does not mark deploy-ok torn down, so its expired resource keeps its own reason.
     const outlived = await aws(), tablePhysical = result.inventory.find((e: any) => e.type === "AWS::DynamoDB::Table").physicalId;
     outlived.resources.push({stackId: "none", logicalId: "Table", type: "AWS::DynamoDB::Table", physicalId: tablePhysical, arn: `arn:aws:dynamodb:us-east-1:123456789012:table/${tablePhysical}`});
+    // A function that reused deploy-ok's physical name for another repository's deployment is judged by its own tags.
+    const fnPhysical = result.inventory.find((e: any) => e.type === "AWS::Lambda::Function").physicalId;
+    outlived.resources.push({stackId: "elsewhere", logicalId: "Fn", type: "AWS::Lambda::Function", physicalId: fnPhysical, arn: `arn:aws:lambda:us-east-1:123456789012:function:${fnPhysical}`,
+      tags: [{Key: "mdlm:repository", Value: "git-commit:other"}, {Key: "mdlm:deployment", Value: "theirs"}]});
     await fs.writeFile(path.join(state, "aws.json"), JSON.stringify(outlived));
     const inventoried = (await cli("deployment", "orphans", ...profile)).json.value.orphans;
     expect(inventoried).toContainEqual({kind: "resource", arn: `arn:aws:dynamodb:us-east-1:123456789012:table/${tablePhysical}`, deployment: "deploy-ok", reason: expect.stringContaining("outlived its stack")});
