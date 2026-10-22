@@ -843,7 +843,7 @@ async function dispatchCommand(
           ok: true, command: "proposal.draft", contract: "mdlm-proposal-draft@1",
           export: {path: file, bytes: bytes.length, exportSha256: createHash("sha256").update(bytes).digest("hex")},
           operation: proposal.operation, action: proposal.action, package: proposal.package,
-          snapshot: proposal.snapshot, ...(proposal.subject ? {subject: proposal.subject} : {}), inputs: proposal.inputs,
+          snapshot: proposal.snapshot, ...(proposal.reviewBinding ? {reviewBinding: proposal.reviewBinding} : {}), ...(proposal.subject ? {subject: proposal.subject} : {}), inputs: proposal.inputs,
           authoring: {
             instruction: "Draft only. Read the selected action's prompt and payloadSchemas, fill authored fields, preserve fixed values, links and predecessors, and supply required receipt or review evidence. A prepared stakeholder role still requires the matching --authority flag at submission after the actual stakeholder decision. This file has not been validated for publication or submitted.",
             guidance: ["mdlm", "expectations", "show", proposal.action, ...(proposal.subject ? [proposal.subject] : []), "--json"],

@@ -128,9 +128,9 @@ test("a review packet above 1 GiB registers with bounded memory when verifier co
     process.env.MDLM_REVIEW_REGISTRAR = "1";
     process.env.MDLM_REVIEW_REGISTRY = registry;
     const verdict = JSON.stringify({candidates: []}), proposal = JSON.stringify({candidates: []});
-    const registered = await registerExternalReview(repository, "large-review", reviewed, verdict, proposal);
+    const registered = await registerExternalReview(repository, "large-review", reviewed, "git-commit:fixture", verdict, proposal);
     expect(registered.contextSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(await requireExternalReview(repository, "large-review", reviewed, proposal)).toEqual(registered);
+    expect(await requireExternalReview(repository, "large-review", reviewed, "git-commit:fixture", proposal)).toEqual(registered);
   } finally {
     for (const [key, value] of [["MDLM_REVIEW_REGISTRAR", environment.registrar], ["MDLM_REVIEW_REGISTRY", environment.registry]] as const) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
