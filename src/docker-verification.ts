@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { captureVerificationReport, validateIndependentVerification, verificationReportOutcome,
   type IndependentVerification, type VerificationArtifact, type VerificationCaseResult } from "./independent-verification-execution.js";
 import type { SecretFinding } from "./secret-scan.js";
+import { NETWORKED_TIMEOUT_MS, PROXY_IMAGE, VerificationNetwork, type NetworkedRun, type VerificationDeployment } from "./networked-verification.js";
 export type { IndependentVerification, VerificationArtifact, VerificationCaseResult } from "./independent-verification-execution.js";
 
 export interface DockerVerificationInput {
@@ -17,6 +18,8 @@ export interface DockerVerificationInput {
   independentVerification?: IndependentVerification;
   timeoutMs?: number;
   formalFiles?: string[];
+  /** Run in the networked mode against this exact deployment (ADR-0009 section 2). */
+  deployment?: VerificationDeployment;
 }
 
 export interface VerificationSourceIdentity {
@@ -47,6 +50,8 @@ export interface DockerVerificationResult {
   caseResults?: VerificationCaseResult[];
   artifacts?: VerificationArtifact[];
   rawReportBase64?: string;
+  /** Present only on a networked run: the deployment, both version probes and the proxy's connection log. */
+  network?: NetworkedRun;
   /** Present only on a result refused by the secret-pattern scan. */
   secretFindings?: SecretFinding[];
 }
@@ -186,6 +191,7 @@ export async function executeDockerVerification(input: DockerVerificationInput):
   const container = `mdlm-verification-${randomUUID()}`;
   let containerAttempted = false;
   let containerCreated = false;
+  let network: VerificationNetwork | undefined;
   try {
     const imageMatch = /^[^\s@]+@sha256:([a-f0-9]{64})$/.exec(input.image);
     const localImage = independent && /^sha256:[a-f0-9]{64}$/.test(input.image);
@@ -195,7 +201,9 @@ export async function executeDockerVerification(input: DockerVerificationInput):
       || command.some((part) => typeof part !== "string" || part.includes("\0")) || !command[0]) {
       throw new Error("Verification command must be a nonempty argv array.");
     }
-    const timeoutMs = input.timeoutMs ?? 60_000;
+    if (input.deployment && !independent) throw new Error("Only an independent verification activity can run against a deployment.");
+    // Networked runs get the fixed longer wait, with no per-activity override.
+    const timeoutMs = input.deployment ? NETWORKED_TIMEOUT_MS : input.timeoutMs ?? 60_000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) throw new Error("Verification timeout must be between 1 and 300000 milliseconds.");
     if (independent) validateIndependentVerification(independent);
     const source = independent ? await authenticateProductSource(input) : await authenticateVerificationSource(input);
@@ -238,8 +246,17 @@ export async function executeDockerVerification(input: DockerVerificationInput):
     if (archivedScriptHash !== result.scriptSha256) throw new Error("Git archive changed the verification script bytes.");
 
     result.phase = "environment";
+    if (input.deployment) {
+      // The run ID is unique per execution, so verifiers can namespace the data they create.
+      network = new VerificationNetwork(input.deployment, randomUUID());
+      const {revision, receipt, endpoint, version} = input.deployment;
+      result.network = {deployment: revision, receipt, endpoint, version, runId: network.runId, proxyImage: PROXY_IMAGE, allowlist: network.allowlist, probes: {}, connections: []};
+      await network.start();
+      result.network.probes.before = await network.probe();
+      if (!result.network.probes.before.matched) throw new Error(`Deployment ${revision} did not report version ${version} at ${result.network.probes.before.url} before the run (status ${result.network.probes.before.status ?? "unreachable"}).`);
+    }
     containerAttempted = true;
-    await checked("docker", ["create", "--name", container, "--network", "none", "--read-only",
+    await checked("docker", ["create", "--name", container, ...(network ? network.containerArguments() : ["--network", "none"]), "--read-only",
       // Match the non-root caller for writable evidence, so nested output keeps
       // host-readable/removable ownership. Root callers retain nobody in Docker.
       "--user", independent && process.getuid?.() ? `${process.getuid()}:${process.getgid!()}` : "65534:65534",
@@ -276,6 +293,10 @@ export async function executeDockerVerification(input: DockerVerificationInput):
     };
     if (!state.Running && Number.isInteger(state.ExitCode)) result.exitCode = state.ExitCode;
     if (state.Error || state.OOMKilled || state.Running) result.diagnostic ??= state.Error || "Container did not finish normally.";
+    if (network && result.network) {
+      result.network.probes.after = await network.probe();
+      if (!result.network.probes.after.matched) result.diagnostic ??= `Deployment ${result.network.deployment} drifted during the run: ${result.network.probes.after.url} no longer reports version ${result.network.version} (status ${result.network.probes.after.status ?? "unreachable"}).`;
+    }
     if (independent && evidenceDirectory) {
       const report = await captureVerificationReport(evidenceDirectory, independent);
       result.caseResults = report.caseResults;
@@ -297,6 +318,14 @@ export async function executeDockerVerification(input: DockerVerificationInput):
       if (containerCreated && (cleanup.problem || cleanup.exitCode !== 0)) {
         result.outcome = "error";
         result.diagnostic = `${result.diagnostic ? `${result.diagnostic} ` : ""}Container cleanup failed: ${cleanup.problem ?? cleanup.stderr.toString("utf8").trim()}`;
+      }
+    }
+    if (network) {
+      if (result.network) result.network.connections = await network.connections();
+      const problem = await network.stop();
+      if (problem) {
+        result.outcome = "error";
+        result.diagnostic = `${result.diagnostic ? `${result.diagnostic} ` : ""}Verification network cleanup failed: ${problem}`;
       }
     }
     if (directory) {
