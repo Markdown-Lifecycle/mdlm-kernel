@@ -188,7 +188,16 @@ lineage. An activity reruns when any cache component differs from its last
 completed run: activity text (payload other than verifier location, commit and
 image, plus body and links), verifier source tree, runtime (image and kernel
 version), or product inputs. Product inputs are the declared `formal_files` of a
-partial-acceptance product, otherwise the whole committed product tree. Committed
+partial-acceptance product, otherwise the whole committed product tree. An
+activity may narrow them with an optional `product_paths` payload field: a
+nonempty array of globs (Node `path.matchesGlob` syntax, relative to the product
+root, for example `["src/api/**", "package.json"]`). List shared files such as
+manifests and lockfiles explicitly. The dry-run key then covers only committed
+files matching a glob (within `formal_files`, when declared), so a change outside
+them keeps the activity's cache hit. The field is the activity author's claim and
+only dry runs use it: the runtime still mounts the same product files, and
+`execution run` ignores it. Without the field the dry run keys on all product
+inputs as before. Committed
 `.gitattributes` entries count as inputs, and a product or verifier whose
 attributes use `export-subst` is also keyed on its commit.
 `--all` reruns every selected activity. `--source` runs a committed candidate
@@ -199,7 +208,8 @@ The `mdlm-execution-dry-run@1` response has `credit: false`, `ready` (every
 selected activity passed), a `summary` count, and per activity its `outcome`,
 `failingCases`, `cache` (`hit` or `miss`) and `invalidatedBy` (`no-cached-result`,
 `forced`, `activity-text-changed`, `verifier-changed`, `runtime-changed`,
-`product-inputs-changed` or `inputs-unavailable`). Without `--json` it prints a
+`product-inputs-changed` or `inputs-unavailable`), and `productInputs.scope`
+(`activity-paths`, `declared-paths` or `whole-tree`). Without `--json` it prints a
 short summary. The receipt reader used by every credit path rejects a stored
 dry-run result, so it cannot become execution evidence even when registered
 under an execution ref.
