@@ -11,9 +11,10 @@ CLI:
 - `mdlm proposal submit <file|-> [--authority <name>] --json`
 - `mdlm proposal settlement <operation> --json`
 - `mdlm execution run <exact-implementation> <operation> --json`
-- `mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <commit>] --json`
+- `mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <commit>] [--deployment <dry-run-deployment>] --json`
 - `mdlm execution settlement <operation> --json`
 - `mdlm deployment run <exact-product> <operation> --stack <slot> --aws-profile apm-<project> --json`
+- `mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <commit>] --json`
 - `mdlm deployment settlement <operation> --json`
 - `mdlm review context <action> <exact-subject> --json`
 - `mdlm review register <proposal-file> <verdict-file> --json`
@@ -193,13 +194,16 @@ partial-acceptance product, otherwise the whole committed product tree. Committe
 attributes use `export-subst` is also keyed on its commit.
 `--all` reruns every selected activity. `--source` runs a committed candidate
 product commit in the product's repository instead of the published one. Runs
-whose container never started are not cached.
+whose container never started are not cached. `--deployment <dry-run-deployment>`
+targets a passing, unexpired dry-run deployment of the same product repository
+and commit (see `deployment dry-run` below). Its template and asset digests join
+the cache key, so a redeploy of the same artifact keeps the activity's cache hit.
 
 The `mdlm-execution-dry-run@1` response has `credit: false`, `ready` (every
 selected activity passed), a `summary` count, and per activity its `outcome`,
 `failingCases`, `cache` (`hit` or `miss`) and `invalidatedBy` (`no-cached-result`,
 `forced`, `activity-text-changed`, `verifier-changed`, `runtime-changed`,
-`product-inputs-changed` or `inputs-unavailable`). Without `--json` it prints a
+`product-inputs-changed`, `deployment-changed` or `inputs-unavailable`). Without `--json` it prints a
 short summary. The receipt reader used by every credit path rejects a stored
 dry-run result, so it cannot become execution evidence even when registered
 under an execution ref.
@@ -236,6 +240,19 @@ values are removed (a matching base64 stream is stored empty), so the stack,
 exit codes and attempt state still record what reached AWS.
 A `deployment` proposal cites the receipt as `evidence.receipt` and links
 `deploys` to the exact product; the kernel fills the managed fields.
+
+`mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <commit>] --json`
+runs the same synth, validation, deploy and probe steps as `deployment run`, but
+only into a slot the deployment action's fixed payload lists in `dry_run_slots`
+(a subset of `stack_slots`), with a lifetime of at most 2 hours. `--source`
+deploys a committed candidate commit in the product's repository instead of the
+published one. Each call gets a new dry-run deployment ID (`dry-<uuid>`), used as
+the binding's operation. It publishes no lifecycle data, takes no repository lock
+and registers no refs. Its record, `.lifecycle/work/deployments/<id>.json` with
+contract `mdlm-deployment-dry-run@1` and `credit: false`, is written as `started`
+before anything runs and replaced by the completed record, which holds the same
+receipt fields. The deployment receipt reader refuses it, so a dry-run deployment
+can never fill a deployment record.
 
 ## Native verification runtime
 

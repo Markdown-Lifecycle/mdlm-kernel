@@ -59,6 +59,14 @@ test("dry run reruns only activities whose inputs changed and its results are ne
     const latest = binding(third, {formalFiles: ["app.py"], image: "img@sha256:" + "b".repeat(64)}, newer);
     expect(await run(latest)).toMatchObject({cache: "miss", invalidatedBy: ["runtime-changed"]});
 
+    // A targeted dry-run deployment reruns only when its template or asset digests change.
+    const deployed = (template: string) => ({templateSha256: template, assets: [{id: "abc", packaging: "zip", path: "asset.abc", sha256: "1".repeat(64)}]});
+    const target = async (template: string) => (await dryRunActivities(cache, [{product: imp, activity, binding: latest, deployment: deployed(template)}], false, execute))[0]!;
+    expect(await target("a".repeat(64))).toMatchObject({cache: "miss", invalidatedBy: ["deployment-changed"]});
+    expect(await target("a".repeat(64))).toMatchObject({cache: "hit"});
+    expect(await target("b".repeat(64))).toMatchObject({cache: "miss", invalidatedBy: ["deployment-changed"]});
+    expect(await run(latest)).toMatchObject({cache: "miss", invalidatedBy: ["deployment-changed"]});
+
     // A container that never started is not cached and does not replace the previous result.
     execute.mockResolvedValueOnce({started: false, outcome: "error", diagnostic: "docker unavailable", startedAt: "now"} as unknown as DockerVerificationResult);
     expect(await run(latest, true)).toMatchObject({outcome: "error", diagnostic: "docker unavailable"});
