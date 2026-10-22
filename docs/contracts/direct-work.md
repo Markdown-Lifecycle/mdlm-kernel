@@ -15,6 +15,9 @@ CLI:
 - `mdlm execution settlement <operation> --json`
 - `mdlm deployment run <exact-product> <operation> --stack <slot> --aws-profile apm-<project> --json`
 - `mdlm deployment settlement <operation> --json`
+- `mdlm deployment teardown <exact-deployment> <operation> --aws-profile apm-<project> --json`
+- `mdlm deployment teardown <operation> --orphan-stack <slot> | --orphan-resource <arn> [--yes] --aws-profile apm-<project> --json`
+- `mdlm deployment orphans --aws-profile apm-<project> --json`
 - `mdlm review context <action> <exact-subject> --json`
 - `mdlm review register <proposal-file> <verdict-file> --json`
 
@@ -236,6 +239,36 @@ values are removed (a matching base64 stream is stored empty), so the stack,
 exit codes and attempt state still record what reached AWS.
 A `deployment` proposal cites the receipt as `evidence.receipt` and links
 `deploys` to the exact product; the kernel fills the managed fields.
+
+Every deployment carries four tags, applied by `cdk deploy --tags` so the
+template digest stays a function of the commit: `mdlm:repository` (the lifecycle
+repository identity), `mdlm:deployment` (the deployment operation, which the
+published record's receipt names), `mdlm:mode` (`credit`) and `mdlm:expires-at`
+(the receipt's `expiresAt`). The deploy is an `error` unless the stack carries
+them. The receipt records the stack's inventory from `ListStackResources`
+(logical ID, type and physical ID of each resource).
+
+A stack in the slot pool, or a resource tagged with this repository, is an
+orphan when its `mdlm:deployment` names no published deployment record in the
+repository, when that deployment already has a passing teardown, or when its
+`mdlm:expires-at` has passed. A slot stack tagged for another repository is left
+to that repository. `mdlm deployment orphans` lists orphans; the same check runs
+before every deploy (recorded as `orphans` in the receipt) and in every teardown.
+It only reports.
+
+`mdlm deployment teardown <exact-deployment> <operation>` deletes the recorded
+stack by stack ID, never by slot name, and passes only when the stack is
+`DELETE_COMPLETE`, the tag query for its deployment is empty, and every top-level
+resource in its inventory (Lambda function, HTTP API, DynamoDB table, log group)
+reports not found. Untaggable children (API stages, routes and integrations,
+Lambda permissions) go with their parents; any other inventory type fails the
+teardown for removal by hand. Otherwise the outcome is `error` and the receipt
+names what remains. `--orphan-stack <slot>` deletes a reported orphan stack in
+the slot pool the same way. `--orphan-resource <arn>` deletes one reported orphan
+resource of those four types after the operator confirms it (`--yes` confirms
+non-interactively). Teardown receipts are write-once under
+`refs/mdlm/teardown/<operation>`, secret-scanned like deployment receipts, and an
+interrupted teardown is not re-run under the same operation.
 
 ## Native verification runtime
 
