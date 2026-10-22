@@ -9,6 +9,7 @@ import { directState } from "./direct-proposal.js";
 import { independentBinding, independentExecutionBinding, selectedActivities } from "./independent-verification.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
 import { refuseSecretResult } from "./secret-scan.js";
+import { requireDeploymentDryRun } from "./deployment-dry-run.js";
 import { DRY_RUN_CONTRACT, type VerificationBinding } from "./verification-receipt.js";
 
 // A fixed non-operation identity: dry runs register no execution refs.
@@ -21,6 +22,8 @@ async function git(cwd: string, args: string[]) {
 
 export interface DryRunComponents {
   activityText: string;
+  /** Template and asset digests of the targeted dry-run deployment, so a redeploy of the same artifact keeps its hits. */
+  deployment?: {templateSha256: string; assets: {id: string; packaging: string; path: string; sha256: string}[]};
   verifier: string;
   runtime: {image: string; kernel: string};
   productInputs: {scope: "activity-paths" | "declared-paths" | "whole-tree"; digest: string};
@@ -30,6 +33,7 @@ const reasons: Record<keyof DryRunComponents, string> = {
   verifier: "verifier-changed",
   runtime: "runtime-changed",
   productInputs: "product-inputs-changed",
+  deployment: "deployment-changed",
 };
 interface CacheEntry {contract: typeof DRY_RUN_CONTRACT; credit: false; product: string; activity: string; sourceCommit: string; components: DryRunComponents; result: DockerVerificationResult}
 
@@ -80,7 +84,7 @@ export async function dryRunComponents(activity: DatumEnvelope, binding: Verific
   };
 }
 
-export interface DryRunActivityInput {product: DatumEnvelope; activity: DatumEnvelope; binding: VerificationBinding}
+export interface DryRunActivityInput {product: DatumEnvelope; activity: DatumEnvelope; binding: VerificationBinding; deployment?: DryRunComponents["deployment"]}
 export interface DryRunActivityResult {
   activity: string;
   outcome: "pass" | "fail" | "error";
@@ -97,10 +101,10 @@ export interface DryRunActivityResult {
 export async function dryRunActivities(cacheDirectory: string, inputs: DryRunActivityInput[], all: boolean, execute = executeDockerVerification): Promise<DryRunActivityResult[]> {
   const kernel = await kernelVersion();
   const results: DryRunActivityResult[] = [];
-  for (const {product, activity, binding} of inputs) {
+  for (const {product, activity, binding, deployment} of inputs) {
     const base = {activity: activity.revision_id, sourceCommit: binding.sourceCommit};
     let components: DryRunComponents;
-    try { components = await dryRunComponents(activity, binding, kernel); }
+    try { components = {...await dryRunComponents(activity, binding, kernel), ...(deployment ? {deployment} : {})}; }
     catch (error) {
       results.push({...base, outcome: "error", cache: "miss", invalidatedBy: ["inputs-unavailable"], failingCases: [], diagnostic: error instanceof Error ? error.message : String(error)});
       continue;
@@ -135,7 +139,7 @@ export async function dryRunActivities(cacheDirectory: string, inputs: DryRunAct
   return results;
 }
 
-export async function runExecutionDryRun(root: string, subject: string, options: {activities: string[]; all: boolean; source?: string | undefined}) {
+export async function runExecutionDryRun(root: string, subject: string, options: {activities: string[]; all: boolean; source?: string | undefined; deployment?: string | undefined}) {
   const current = await directState(root);
   if (!independentBinding(current.pkg)) throw new Error("Execution dry run requires a package with independent-verification@1");
   const product = current.data.find(d => d.revision_id === subject);
@@ -144,21 +148,23 @@ export async function runExecutionDryRun(root: string, subject: string, options:
   const unknown = options.activities.filter(id => !selection.some(a => a.revision_id === id));
   if (unknown.length) throw new Error(`Activities are not in the product's exact verification selection: ${unknown.join(", ")}`);
   const activities = options.activities.length ? selection.filter(a => options.activities.includes(a.revision_id)) : selection;
+  const sourceCommit = options.source ?? String(product.payload.source_commit);
+  const deployment = options.deployment ? await requireDeploymentDryRun(root, options.deployment, {repositoryPath: String(product.payload.repository_path), sourceCommit}) : undefined;
   const inputs = activities.map(activity => {
     const binding = independentExecutionBinding(current, product, activity.revision_id, DRY_RUN_OPERATION);
-    return {product, activity, binding: options.source ? {...binding, sourceCommit: options.source} : binding};
+    return {product, activity, binding: options.source ? {...binding, sourceCommit: options.source} : binding, ...(deployment ? {deployment: deployment.assembly} : {})};
   });
   const cacheDirectory = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "mdlm-dry-run"])).trim());
   const results = await dryRunActivities(cacheDirectory, inputs, options.all);
   const count = (outcome: string) => results.filter(r => r.outcome === outcome).length;
   const summary = {activities: results.length, pass: count("pass"), fail: count("fail"), error: count("error"), cacheHits: results.filter(r => r.cache === "hit").length, ran: results.filter(r => r.cache === "miss").length};
-  return {ok: true, contract: DRY_RUN_CONTRACT, credit: false, product: product.revision_id, sourceCommit: options.source ?? String(product.payload.source_commit), ready: results.length > 0 && summary.pass === results.length, summary, activities: results, cache: cacheDirectory};
+  return {ok: true, contract: DRY_RUN_CONTRACT, credit: false, product: product.revision_id, sourceCommit, ready: results.length > 0 && summary.pass === results.length, summary, ...(deployment ? {deployment: deployment.id} : {}), activities: results, cache: cacheDirectory};
 }
 
 export function renderExecutionDryRun(result: Awaited<ReturnType<typeof runExecutionDryRun>>): string {
   const s = result.summary;
   return [
-    `Dry run (non-credit) of ${result.product} at ${result.sourceCommit}: ${result.ready ? "ready" : "not ready"}`,
+    `Dry run (non-credit) of ${result.product} at ${result.sourceCommit}${"deployment" in result ? ` against ${result.deployment}` : ""}: ${result.ready ? "ready" : "not ready"}`,
     `${s.activities} ${s.activities === 1 ? "activity" : "activities"}: ${s.pass} pass, ${s.fail} fail, ${s.error} error; ${s.cacheHits} cached, ${s.ran} ran`,
     ...result.activities.map(a => `${a.activity} | ${a.outcome} | ${a.cache}${a.invalidatedBy.length ? ` (${a.invalidatedBy.join(", ")})` : ""}${a.failingCases.length ? ` | failing: ${a.failingCases.map(c => c.case_id).join(", ")}` : ""}${a.diagnostic ? ` | ${a.diagnostic}` : ""}`),
   ].join("\n");

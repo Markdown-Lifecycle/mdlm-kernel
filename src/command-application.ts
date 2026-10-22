@@ -12,6 +12,7 @@ import { inspectRequirementTrace } from "./requirement-trace-inspection.js";
 import { independentBinding, verificationStatus } from "./independent-verification.js";
 import { renderMaintenanceView } from "./maintenance-view.js";
 import { renderExecutionDryRun, runExecutionDryRun } from "./execution-dry-run.js";
+import { runDeploymentDryRun } from "./deployment-dry-run.js";
 import { loadProcessPackage, resolveType, type LifecycleSnapshot, type ProcessDiagnostic } from "./index.js";
 import { evaluateProcessDefinition, evaluateProcessExpression, type ProcessDirectEvaluation } from "./evaluator.js";
 import { processCapabilities, processInspection } from "./process-package-inspection.js";
@@ -46,10 +47,11 @@ Direct lifecycle work:
   mdlm verification context <exact-RQS-or-EXP> [--output <file>] [--json]
   mdlm verification status <exact-product-or-selection> [--json]
   mdlm execution run <exact-subject> <operation-id> [--activity <exact-activity>] [--json]
-  mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>] [--json]
+  mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>] [--deployment <dry-run-deployment>] [--json]
   mdlm execution settlement <operation-id> [--json]
   mdlm execution export <operation-id> <new-directory> [--json]
   mdlm deployment run <exact-product> <operation-id> --stack <slot> --aws-profile apm-<project> [--json]
+  mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <product-commit>] [--json]
   mdlm deployment settlement <operation-id> [--json]
   mdlm review context <action> [<exact-subject>] [--output <file> [--format shared-verifier-trees]] [--json]
   mdlm review expand-context <archive-file> --output <new-file> [--json]
@@ -799,11 +801,12 @@ async function dispatchCommand(
   if (operands[0] === "execution") {
     try {
       if (operands[1] === "dry-run") {
-        const dryRunOperands = operands.filter((argument, index) => argument !== "--all" && argument !== "--source" && operands[index - 1] !== "--source");
-        const source = optionValues(arguments_, "--source");
+        const dryRunOperands = operands.filter((argument, index) => argument !== "--all" && !["--source", "--deployment"].includes(argument) && !["--source", "--deployment"].includes(operands[index - 1]!));
+        const source = optionValues(arguments_, "--source"), deployment = optionValues(arguments_, "--deployment");
         const activities = optionValues(arguments_, "--activity");
-        if (dryRunOperands.length !== 3 || source.length > 1 || arguments_.filter(argument => argument === "--activity").length !== activities.length || (arguments_.includes("--source") && !source.length) || [...source, ...activities].some(value => !value || value.startsWith("--"))) throw new Error("Expected execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>]");
-        return {...await runExecutionDryRun(repositoryRoot, dryRunOperands[2]!, {activities, all: arguments_.includes("--all"), source: source[0]}), command: "execution.dry-run", diagnostics: []};
+        const occurrences = (option: string) => arguments_.filter(argument => argument === option).length;
+        if (dryRunOperands.length !== 3 || source.length > 1 || deployment.length > 1 || occurrences("--activity") !== activities.length || occurrences("--source") !== source.length || occurrences("--deployment") !== deployment.length || [...source, ...deployment, ...activities].some(value => !value || value.startsWith("--"))) throw new Error("Expected execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>] [--deployment <dry-run-deployment>]");
+        return {...await runExecutionDryRun(repositoryRoot, dryRunOperands[2]!, {activities, all: arguments_.includes("--all"), source: source[0], deployment: deployment[0]}), command: "execution.dry-run", diagnostics: []};
       }
       if (operands[1] === "run" && operands.length === 4) return {...await runDirectExecution(repositoryRoot, operands[2]!, operands[3]!, optionValue(arguments_, "--activity")), command: "execution.run", diagnostics: []};
       if (operands[1] === "export" && operands.length === 4) return {...await exportDirectExecution(repositoryRoot, operands[2]!, path.resolve(repositoryRoot,operands[3]!)),command:"execution.export",diagnostics:[]};
@@ -813,14 +816,20 @@ async function dispatchCommand(
   }
   if (operands[0] === "deployment") {
     try {
-      const deploymentOperands = operands.filter((argument, index) => !["--stack", "--aws-profile"].includes(argument) && !["--stack", "--aws-profile"].includes(operands[index - 1]!));
-      if (deploymentOperands[1] === "run" && deploymentOperands.length === 4) {
+      const deploymentOperands = operands.filter((argument, index) => !["--stack", "--aws-profile", "--source"].includes(argument) && !["--stack", "--aws-profile", "--source"].includes(operands[index - 1]!));
+      if (deploymentOperands[1] === "dry-run" && deploymentOperands.length === 3) {
+        const stack = optionValues(arguments_, "--stack"), awsProfile = optionValues(arguments_, "--aws-profile"), source = optionValues(arguments_, "--source");
+        const occurrences = (option: string) => arguments_.filter(argument => argument === option).length;
+        if (stack.length !== 1 || awsProfile.length !== 1 || source.length > 1 || occurrences("--stack") !== 1 || occurrences("--aws-profile") !== 1 || occurrences("--source") !== source.length || [...stack, ...awsProfile, ...source].some(value => !value || value.startsWith("--"))) throw new Error("deployment dry-run requires one --stack <dry-run-slot>, one --aws-profile apm-<project> and at most one --source <product-commit>");
+        return {...await runDeploymentDryRun(repositoryRoot, deploymentOperands[2]!, {stack: stack[0]!, awsProfile: awsProfile[0]!, source: source[0]}), command: "deployment.dry-run", diagnostics: []};
+      }
+      if (deploymentOperands[1] === "run" && deploymentOperands.length === 4 && !arguments_.includes("--source")) {
         const stack = optionValues(arguments_, "--stack"), awsProfile = optionValues(arguments_, "--aws-profile");
         if (stack.length !== 1 || awsProfile.length !== 1 || [...stack, ...awsProfile].some(value => !value || value.startsWith("--"))) throw new Error("deployment run requires one --stack <slot> and one --aws-profile apm-<project>");
         return {...await runDirectDeployment(repositoryRoot, deploymentOperands[2]!, deploymentOperands[3]!, {stack: stack[0]!, awsProfile: awsProfile[0]!}), command: "deployment.run", diagnostics: []};
       }
       if (deploymentOperands[1] === "settlement" && deploymentOperands.length === 3 && deploymentOperands.length === operands.length) return {...await inspectDirectDeployment(repositoryRoot, deploymentOperands[2]!), command: "deployment.settlement", diagnostics: []};
-      throw new Error("Expected deployment run <exact-product> <operation-id> --stack <slot> --aws-profile apm-<project> or deployment settlement <operation-id>");
+      throw new Error("Expected deployment run <exact-product> <operation-id> --stack <slot> --aws-profile apm-<project>, deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> or deployment settlement <operation-id>");
     } catch (error) { return {...failure("direct-deployment-invalid", String(error)), command: "deployment"}; }
   }
   if (operands[0] === "expectations") {

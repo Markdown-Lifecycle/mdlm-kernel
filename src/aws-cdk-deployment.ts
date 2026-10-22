@@ -27,13 +27,16 @@ export interface DeploymentConfig {
   region: string;
   apm_project: string;
   stack_slots: string[];
+  /** The slots `deployment dry-run` may use; a subset of stack_slots. */
+  dry_run_slots?: string[];
   output_allowlist: string[];
   endpoint_output: string;
   probe_path: string;
   max_lifetime_minutes: number;
 }
 export interface DeploymentBinding {
-  contract: "mdlm-deployment@1";
+  /** Dry-run bindings carry their own contract, so the credit receipt reader never accepts them. */
+  contract: "mdlm-deployment@1" | "mdlm-deployment-dry-run@1";
   operation: string;
   package: unknown;
   action: string;
@@ -91,7 +94,8 @@ export function parseDeploymentConfig(value: unknown): DeploymentConfig {
     if (!Array.isArray(list) || !list.length || new Set(list).size !== list.length || list.some(item => !pattern.test(String(item)))) fail(`${field} must list distinct names`);
     return list as string[];
   };
-  names("stack_slots", /^[A-Za-z][A-Za-z0-9-]{0,127}$/);
+  const slots = names("stack_slots", /^[A-Za-z][A-Za-z0-9-]{0,127}$/);
+  if (c.dry_run_slots !== undefined && names("dry_run_slots", /^[A-Za-z][A-Za-z0-9-]{0,127}$/).some(slot => !slots.includes(slot))) fail("dry_run_slots must be stack slots");
   const outputs = names("output_allowlist", /^[A-Za-z0-9]{1,255}$/);
   if (!outputs.includes(String(c.endpoint_output))) fail("endpoint_output must be an allowlisted output");
   if (!/^\/[\x21-\x7e]*$/.test(String(c.probe_path))) fail("probe_path must be an absolute URL path");

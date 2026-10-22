@@ -10,11 +10,12 @@ import { installedProcessPackageRoot } from "../src/installed-process-package.js
 import { initializeRepositoryFromProcessPackage } from "../src/repository-initialization.js";
 import { loadProcessPackage } from "../src/index.js";
 import { runDeploymentReceipt } from "../src/aws-cdk-deployment.js";
+import { requireDeploymentDryRun } from "../src/deployment-dry-run.js";
 
 const run = promisify(execFile);
 const config = {
   synth_image: `cdk-synth@sha256:${"c".repeat(64)}`, cdk_cli_version: "2.1000.0", cdk_app_path: "infra", region: "us-east-1", apm_project: "mdlm-demo",
-  stack_slots: ["mdlm-demo-credit", "mdlm-demo-dry-1"], output_allowlist: ["ApiEndpoint"], endpoint_output: "ApiEndpoint", probe_path: "/version", max_lifetime_minutes: 120,
+  stack_slots: ["mdlm-demo-credit", "mdlm-demo-dry-1"], dry_run_slots: ["mdlm-demo-dry-1"], output_allowlist: ["ApiEndpoint"], endpoint_output: "ApiEndpoint", probe_path: "/version", max_lifetime_minutes: 240,
 };
 
 // Stand-ins on PATH. They keep state beside themselves because the kernel gives host
@@ -278,6 +279,25 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     leakRecord.candidates[0].links = [{type: "deploys", target: products.leak!.revision}];
     leakRecord.evidence = {receipt: leakRun.json.value.evidence};
     expect((await cli("show", await submit(leakRecord))).json.lifecycleDatum.datum.payload).toMatchObject({outcome: "error", stack: {name: "mdlm-demo-dry-1"}});
+
+    // A dry run deploys only to a dry-run slot with a 2-hour lifetime, registers no refs and is never deployment evidence.
+    await fs.rm(path.join(state, "stacks"), {recursive: true});
+    const dryRun = (stack: string) => cli("deployment", "dry-run", products.ok!.revision, "--stack", stack, "--aws-profile", "apm-mdlm-demo");
+    expect((await dryRun("mdlm-demo-credit")).json.diagnostics[0].message).toContain("not one of the package's dry-run slots");
+    const dry = (await dryRun("mdlm-demo-dry-1")).json;
+    expect(dry, JSON.stringify(dry)).toMatchObject({ok: true, contract: "mdlm-deployment-dry-run@1", credit: false, id: expect.stringMatching(/^dry-/),
+      value: {state: "completed", binding: {contract: "mdlm-deployment-dry-run@1", operation: dry.id, stack: "mdlm-demo-dry-1", config: {max_lifetime_minutes: 120}}, result: {outcome: "pass", stack: {name: "mdlm-demo-dry-1"}, assembly: result.assembly}}});
+    expect(git(repository, "for-each-ref", `refs/mdlm/deployment/${dry.id}`)).toBe("");
+    expect(git(repository, "status", "--porcelain")).toBe("");
+    const dryOid = git(repository, "hash-object", "-w", dry.record);
+    git(repository, "update-ref", `refs/mdlm/deployment/${dry.id}/attempt-1-receipt`, dryOid);
+    const dryCited = await draft("deploy-product", "record-dry-run");
+    Object.assign(dryCited, {candidates: record.candidates, evidence: {receipt: `git-blob:${dryOid}`}});
+    await fs.writeFile(path.join(root, "dry-cited.json"), JSON.stringify(dryCited));
+    expect((await cli("proposal", "submit", path.join(root, "dry-cited.json"))).json.diagnostics[0].message).toContain("not a deployment receipt");
+    // Execution dry runs may target it only for the commit it deployed, and key on its digests.
+    expect(await requireDeploymentDryRun(repository, dry.id, {repositoryPath: product, sourceCommit: products.ok!.commit})).toEqual({id: dry.id, assembly: result.assembly});
+    await expect(requireDeploymentDryRun(repository, dry.id, {repositoryPath: product, sourceCommit: products.leak!.commit})).rejects.toThrow("not product commit");
 
     // An interrupted attempt leaves its started marker and is never re-run.
     const binding = (await cli("deployment", "settlement", "deploy-ok")).json.value.receipt.binding;
