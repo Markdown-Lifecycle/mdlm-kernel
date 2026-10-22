@@ -23,7 +23,7 @@ export interface DryRunComponents {
   activityText: string;
   verifier: string;
   runtime: {image: string; kernel: string};
-  productInputs: {scope: "declared-paths" | "whole-tree"; digest: string};
+  productInputs: {scope: "activity-paths" | "declared-paths" | "whole-tree"; digest: string};
 }
 const reasons: Record<keyof DryRunComponents, string> = {
   activityText: "activity-text-changed",
@@ -61,6 +61,14 @@ export async function dryRunComponents(activity: DatumEnvelope, binding: Verific
     // The runtime mounts only declared files, so only their committed bytes and modes matter.
     const declared = new Set(binding.formalFiles);
     productInputs = {scope: "declared-paths", digest: sha256({files: [...declared].sort(), entries: archived.entries.filter(entry => declared.has(entryPath(entry))).sort(), attributes: archived.attributes, commit: archived.commit})};
+  }
+  const globs = activity.payload.product_paths;
+  if (globs !== undefined) {
+    // The activity's own claim of what it exercises. Only dry runs trust it; credit runs still mount everything.
+    if (!Array.isArray(globs) || !globs.length || globs.some(glob => typeof glob !== "string" || !glob.trim())) throw new Error("Activity product_paths must be a nonempty array of nonblank globs");
+    const mounted = binding.formalFiles ? new Set(binding.formalFiles) : undefined;
+    const entries = archived.entries.filter(entry => (!mounted || mounted.has(entryPath(entry))) && globs.some(glob => path.posix.matchesGlob(entryPath(entry), glob)));
+    productInputs = {scope: "activity-paths", digest: sha256({globs: [...globs].sort(), formalFiles: binding.formalFiles ? [...binding.formalFiles].sort() : undefined, entries: entries.sort(), attributes: archived.attributes, commit: archived.commit})};
   }
   const verifierTree = (await authenticateVerificationSource(verifier)).sourceTree;
   const verifierCommit = (await archiveIdentity(verifier.repositoryPath, verifier.sourceCommit)).commit;
