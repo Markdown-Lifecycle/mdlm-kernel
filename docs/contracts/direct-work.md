@@ -198,12 +198,14 @@ whose container never started are not cached. `--deployment <dry-run-deployment>
 targets a passing, unexpired dry-run deployment of the same product repository
 and commit (see `deployment dry-run` below). Its template and asset digests join
 the cache key, so a redeploy of the same artifact keeps the activity's cache hit.
+A changed digest, or adding or dropping the target, reruns it as
+`deployment-changed`.
 
 The `mdlm-execution-dry-run@1` response has `credit: false`, `ready` (every
 selected activity passed), a `summary` count, and per activity its `outcome`,
 `failingCases`, `cache` (`hit` or `miss`) and `invalidatedBy` (`no-cached-result`,
 `forced`, `activity-text-changed`, `verifier-changed`, `runtime-changed`,
-`product-inputs-changed`, `deployment-changed` or `inputs-unavailable`). Without `--json` it prints a
+`product-inputs-changed` or `inputs-unavailable`). Without `--json` it prints a
 short summary. The receipt reader used by every credit path rejects a stored
 dry-run result, so it cannot become execution evidence even when registered
 under an execution ref.

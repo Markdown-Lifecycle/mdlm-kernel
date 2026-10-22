@@ -22,11 +22,11 @@ async function git(cwd: string, args: string[]) {
 
 export interface DryRunComponents {
   activityText: string;
+  /** Template and asset digests of the targeted dry-run deployment, so a redeploy of the same artifact keeps its hits. */
+  deployment?: {templateSha256: string; assets: {id: string; packaging: string; path: string; sha256: string}[]};
   verifier: string;
   runtime: {image: string; kernel: string};
   productInputs: {scope: "declared-paths" | "whole-tree"; digest: string};
-  /** Template and asset digests of the targeted dry-run deployment, so a redeploy of the same artifact keeps its hits. */
-  deployment?: {templateSha256: string; assets: {id: string; packaging: string; path: string; sha256: string}[]};
 }
 const reasons: Record<keyof DryRunComponents, string> = {
   activityText: "activity-text-changed",
