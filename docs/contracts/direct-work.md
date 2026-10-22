@@ -232,11 +232,11 @@ allowlist; a custom resource (`Custom::*`, `AWS::CloudFormation::CustomResource`
 an API stage, route or integration, or a Lambda permission, that does not
 reference an allowlisted parent in the same stack (`AWS::CDK::Metadata` is
 allowed); a Lambda function without reserved concurrency of 10 or less or without
-an explicit log group in the stack; an API that is not HTTP or has no stage
+an explicit log group in the stack; an API that is not HTTP, uses quick create (`Target`) or has no stage
 setting `ThrottlingBurstLimit` and `ThrottlingRateLimit`; a log group without
 1-day retention; a table without `PAY_PER_REQUEST` billing; a `DeletionPolicy` or
 `UpdateReplacePolicy` other than `Delete` (explicit `Delete` for tables and log
-groups); any `mdlm:` tag on a resource or the stack, since the kernel applies
+groups) or enabled deletion protection; tags that are not literal, or any `mdlm:` tag on a resource or the stack, since the kernel applies
 those; and a stack outside the slot pool. Only then does the host CDK CLI run
 `cdk deploy --app <cdk.out>` with `AWS_PROFILE` set to the operator's APM profile
 and no other inherited AWS variables. A slot that already holds a stack is

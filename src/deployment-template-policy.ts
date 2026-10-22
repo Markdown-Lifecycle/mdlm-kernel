@@ -25,14 +25,22 @@ function target(value: unknown): string | undefined {
   const attribute = value["Fn::GetAtt"];
   return Array.isArray(attribute) ? String(attribute[0]) : typeof attribute === "string" ? attribute.split(".")[0] : undefined;
 }
-const reservedTags = (tags: unknown) => (Array.isArray(tags) ? tags.map(tag => String(tag?.Key)) : object(tags) ? Object.keys(tags) : []).some(key => key.startsWith("mdlm:"));
+/** Tags must be literal so the policy can read them; an intrinsic key or a conditional collection could resolve to an mdlm: key. */
+function tagProblem(tags: unknown): string | undefined {
+  if (tags === undefined) return undefined;
+  const keys = Array.isArray(tags) ? tags.map(tag => tag?.Key) : object(tags) ? Object.keys(tags) : [undefined];
+  if (keys.some(key => typeof key !== "string" || key.startsWith("Fn::") || key === "Ref")) return "sets tags that are not literal key-value pairs";
+  if (keys.some(key => key.startsWith("mdlm:"))) return "sets mdlm: tags, which only the kernel applies";
+  return undefined;
+}
 const positive = (value: unknown) => typeof value === "number" && value > 0;
 
 /** Every rule the template breaks; an empty list means it may be deployed. */
 export function templatePolicyProblems(template: unknown, stack: {name: string; tags?: unknown}, config: Pick<DeploymentConfig, "stack_slots" | "resource_allowlist">): string[] {
   const problems: string[] = [];
   if (!config.stack_slots.includes(stack.name)) problems.push(`stack '${stack.name}' is not in the package's slot pool`);
-  if (reservedTags(stack.tags)) problems.push("the stack sets mdlm: tags, which only the kernel applies");
+  const stackTagProblem = tagProblem(stack.tags);
+  if (stackTagProblem) problems.push(`the stack ${stackTagProblem}`);
   if (!object(template) || !object(template.Resources)) return [...problems, "the template has no Resources"];
   const resources = template.Resources as Record<string, any>;
   const typeOf = (id: string | undefined) => id !== undefined && object(resources[id]) ? resources[id].Type : undefined;
@@ -44,7 +52,10 @@ export function templatePolicyProblems(template: unknown, stack: {name: string; 
     if (child) {
       if (typeOf(target(properties[child.reference])) !== child.parent || !allowed(child.parent)) problems.push(`${at} is allowed only as a child of an allowlisted ${child.parent} in this stack`);
     } else if (type !== BOOKKEEPING && !allowed(type)) { problems.push(`${at} is not on the package resource allowlist`); continue; }
-    if (reservedTags(properties.Tags)) problems.push(`${at} sets mdlm: tags, which only the kernel applies`);
+    const resourceTagProblem = tagProblem(properties.Tags);
+    if (resourceTagProblem) problems.push(`${at} ${resourceTagProblem}`);
+    // Deletion protection makes AWS refuse the delete that DESTROY promises.
+    if (properties.DeletionProtectionEnabled !== undefined && properties.DeletionProtectionEnabled !== false) problems.push(`${at} must not enable deletion protection`);
     const deletion = resource.DeletionPolicy, replacement = resource.UpdateReplacePolicy;
     if ((STATEFUL.has(type) ? deletion !== "Delete" : (deletion ?? "Delete") !== "Delete") || (replacement ?? "Delete") !== "Delete") problems.push(`${at} must use RemovalPolicy.DESTROY (DeletionPolicy and UpdateReplacePolicy Delete)`);
     if (type === FUNCTION) {
@@ -55,6 +66,8 @@ export function templatePolicyProblems(template: unknown, stack: {name: string; 
     }
     if (type === API) {
       if (properties.ProtocolType !== "HTTP") problems.push(`${at} must be an HTTP API`);
+      // Quick create adds an unthrottled default stage outside the template.
+      if (properties.Target !== undefined) problems.push(`${at} must not use quick create (Target)`);
       if (!Object.values(resources).some(other => other?.Type === STAGE && target(other.Properties?.ApiId) === id)) problems.push(`${at} needs a stage that sets throttling`);
     }
     if (type === STAGE && !(positive(properties.DefaultRouteSettings?.ThrottlingBurstLimit) && positive(properties.DefaultRouteSettings?.ThrottlingRateLimit))) problems.push(`${at} must set stage throttling (ThrottlingBurstLimit and ThrottlingRateLimit)`);

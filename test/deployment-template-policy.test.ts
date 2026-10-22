@@ -42,6 +42,10 @@ test("each template policy rule refuses a template that breaks it", () => {
     ["removal policy", t => { t.Resources.Fn.UpdateReplacePolicy = "Retain"; }, "Fn (AWS::Lambda::Function) must use RemovalPolicy.DESTROY"],
     ["tags", t => { t.Resources.Fn.Properties.Tags.push({Key: "mdlm:expires-at", Value: "2099-01-01T00:00:00Z"}); }, "Fn (AWS::Lambda::Function) sets mdlm: tags, which only the kernel applies"],
     ["tags", t => { t.Resources.Api.Properties.Tags["mdlm:deployment"] = "forged"; }, "Api (AWS::ApiGatewayV2::Api) sets mdlm: tags"],
+    ["tags", t => { t.Resources.Fn.Properties.Tags.push({Key: {"Fn::Join": ["", ["mdlm:", "deployment"]]}, Value: "forged"}); }, "Fn (AWS::Lambda::Function) sets tags that are not literal"],
+    ["tags", t => { t.Resources.Fn.Properties.Tags = {"Fn::If": ["Cond", [{Key: "mdlm:mode", Value: "credit"}], []]}; }, "Fn (AWS::Lambda::Function) sets tags that are not literal"],
+    ["removal policy", t => { t.Resources.Table.Properties.DeletionProtectionEnabled = true; }, "Table (AWS::DynamoDB::Table) must not enable deletion protection"],
+    ["throttling", t => { t.Resources.Api.Properties.Target = {"Fn::GetAtt": ["Fn", "Arn"]}; }, "Api (AWS::ApiGatewayV2::Api) must not use quick create (Target)"],
   ];
   for (const [rule, mutate, message] of cases) {
     const template = compliant();
