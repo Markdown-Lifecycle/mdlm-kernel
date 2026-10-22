@@ -74,7 +74,7 @@ test("independent reviews stay valid across unrelated publications and refuse in
     await fs.writeFile(tampered.file, JSON.stringify({...tampered.proposal, reviewBinding: `sha256:${"0".repeat(64)}`}));
     expect(cli(1, "review", "register", tampered.file, tampered.verdict).diagnostics[0].message).toContain("Review context changed since the proposal was drafted");
     const g = cli(0, "expectations", "show", "plan-criterion-verification", experiment);
-    expect(cli(1, "proposal", "submit", await write("unreviewed.json", {operation: "unreviewed", action: g.action, package: g.package, snapshot: `sha256:${"0".repeat(64)}`, reviewBinding: tampered.proposal.reviewBinding, subject: g.subject, inputs: g.inputs, candidates: g.candidates})).diagnostics[0].message).toContain("Only an independently reviewed action can bind a review context");
+    expect(cli(1, "proposal", "submit", await write("unreviewed.json", {operation: "unreviewed", action: g.action, package: g.package, snapshot: `sha256:${"0".repeat(64)}`, reviewBinding: tampered.proposal.reviewBinding, subject: g.subject, inputs: g.inputs, candidates: g.candidates})).diagnostics[0].message).toContain("Only an independently reviewed review action can bind a review context");
 
     // Compatibility: a registration from an earlier kernel (@2, whole context with snapshot) still authorizes a
     // proposal without a binding, and its published proof settles and replays.

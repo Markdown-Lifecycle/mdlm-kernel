@@ -215,8 +215,8 @@ test("selected guidance states effective authority without changing proposal evi
       const file = path.join(root, `${id}.json`);
       cli("proposal", "draft", id, "--operation", `draft-${id}`, "--output", file);
       const proposal = JSON.parse(await fs.readFile(file, "utf8"));
+      // An independently reviewed authoring action keeps the snapshot rule, so its draft has no review binding (ADR 0011).
       expect(proposal).toEqual({operation: `draft-${id}`, action: guidance.action, package: guidance.package, snapshot: guidance.snapshot, inputs: guidance.inputs, candidates: guidance.candidates,
-        ...(authority?.kind === "independent-review" ? {reviewBinding: expect.stringMatching(/^sha256:[a-f0-9]{64}$/)} : {}),
         ...(authority?.kind === "stakeholder" ? {evidence: {authority: [authority.name]}} : {})});
     }
   } finally {await fs.rm(root, {recursive: true, force: true});}

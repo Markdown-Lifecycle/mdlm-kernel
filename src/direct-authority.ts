@@ -11,9 +11,11 @@ export interface DirectAuthorityEvidence {
   source: "registered-review" | "authority-supply";
   review?: ExternalReviewProof;
 }
+/** Only review outputs depend on nothing beyond their review context; authoring actions keep the snapshot rule. */
+export const bindsReviewContext = (action: DirectContext["action"]): boolean => action.capability === "review" && action.authority?.kind === "independent-review";
 /** A review binding replaces only the snapshot comparison; every other exact selection still applies (ADR 0011). */
 function checkContext(context: DirectContext, proposal: DirectProposal): void {
-  if (proposal.reviewBinding !== undefined && context.action.authority?.kind !== "independent-review") throw new Error("Only an independently reviewed action can bind a review context");
+  if (proposal.reviewBinding !== undefined && !bindsReviewContext(context.action)) throw new Error("Only an independently reviewed review action can bind a review context");
   if (proposal.action !== `${context.action.id}@${context.action.version}` || (proposal.reviewBinding === undefined && proposal.snapshot !== context.snapshot) || !isDeepStrictEqual(proposal.package, context.package) || proposal.subject !== context.subject || (proposal.inputs !== undefined && !isDeepStrictEqual(proposal.inputs, context.inputs))) throw new Error("Review proposal differs from its current exact action, package, snapshot or inputs");
 }
 function repositoryOf(context: DirectContext): string {

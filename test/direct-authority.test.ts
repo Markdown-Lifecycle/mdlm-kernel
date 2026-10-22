@@ -50,6 +50,10 @@ test("stakeholder decisions require exact supplied authority and cannot borrow r
   await expect(validateDirectAuthority(context,proposal,JSON.stringify(proposal))).rejects.toThrow("explicit authority");
   const wrong = {...proposal,evidence:{authority:["reviewer"]}};
   await expect(validateDirectAuthority(context,wrong,JSON.stringify(wrong))).rejects.toThrow("differs");
+  // An independently reviewed authoring action generates data from the whole repository, so it can't skip the snapshot.
+  const authoring = {...context,action:{...action,capability:"requirements" as const}};
+  const bound = {...proposal,action:"review@1",reviewBinding:`sha256:${"0".repeat(64)}`};
+  await expect(validateDirectAuthority(authoring,bound,JSON.stringify(bound))).rejects.toThrow("Only an independently reviewed review action");
   const borrowed = {...proposal,evidence:{authority:["stakeholder"],review:{proof:"reviewer"}}};
   await expect(validateDirectAuthority(context,borrowed,JSON.stringify(borrowed))).rejects.toThrow("cannot supply");
   const supplied = {...proposal,evidence:{authority:["stakeholder"]}};

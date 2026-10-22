@@ -12,7 +12,7 @@ import { resolvePrompt } from "./direct-prompt.js";
 import { evaluateExpressionValue } from "./evaluator.js";
 import { compileExpressionValue } from "./expression.js";
 import { finalizeDirectDomain } from "./direct-domain.js";
-import { validateDirectAuthority, buildDirectReviewContext, registerDirectReview, directReviewBinding, type DirectAuthorityEvidence } from "./direct-authority.js";
+import { validateDirectAuthority, buildDirectReviewContext, registerDirectReview, directReviewBinding, bindsReviewContext, type DirectAuthorityEvidence } from "./direct-authority.js";
 import { readVerificationReceiptBlob, requireCoherentVerificationResult, validateVerificationReceipt, type VerificationBinding, runVerificationReceipt, verificationRef } from "./verification-receipt.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
 import { requirementTraceBinding } from "./requirement-trace.js";
@@ -184,7 +184,7 @@ export async function draftDirectProposal(root: string, action: string, subject:
     if (!existing.length) result.links.push({type: "evaluates", target: activity});
   }
   // A review binds its own context instead of the whole snapshot (ADR 0011).
-  const reviewBinding = context.action.authority?.kind === "independent-review" ? directReviewBinding(context, await buildDirectReviewContext(context)) : undefined;
+  const reviewBinding = bindsReviewContext(context.action) ? directReviewBinding(context, await buildDirectReviewContext(context)) : undefined;
   return {
     operation, action: selected.action, package: selected.package, snapshot: selected.snapshot, ...(reviewBinding ? {reviewBinding} : {}),
     ...(selected.subject ? {subject: selected.subject} : {}), inputs: selected.inputs, candidates: selected.candidates,
@@ -254,7 +254,7 @@ export async function submitDirectProposal(root:string,source:string,authorities
     const saved=await settlement(root,proposal.operation);if(saved){if(saved.tx.proposalDigest!==proposalDigest)fail("Operation already published different candidate bytes");return saved.result;}
     const current=await directState(root);if(!isDeepStrictEqual(proposal.package,current.package))fail("Proposal package changed; refresh guidance");if(proposal.reviewBinding===undefined&&proposal.snapshot!==current.snapshot)fail(`Proposal snapshot does not match lifecycle repository ${current.repository} and its current data; it was drafted in another repository, an earlier state or by an earlier MDLM release. Redraft it from fresh guidance in this repository`);
     const context=directContext(current,proposal.action,proposal.subject);
-    if(proposal.reviewBinding!==undefined&&context.action.authority?.kind!=="independent-review")fail("Only an independently reviewed action can bind a review context");
+    if(proposal.reviewBinding!==undefined&&!bindsReviewContext(context.action))fail("Only an independently reviewed review action can bind a review context");
     if(proposal.inputs&&!isDeepStrictEqual(proposal.inputs,context.inputs))fail("Proposal exact inputs changed");
     const prompt=await resolvePrompt(current.pkg,context.action.prompt_ref);if(!prompt.prompt||prompt.diagnostics.length)fail("Package prompt unavailable");
     // Cheap authored-schema refusal precedes historical, authority and receipt checks; publication still validates the final data.
