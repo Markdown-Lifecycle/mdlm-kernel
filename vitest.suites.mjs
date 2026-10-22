@@ -7,7 +7,7 @@ const fast = [
   "direct-selection-public", "iterative-public", "iterative-maintenance-reuse", "kernel-cutover", "lifecycle-schema-diagnostics", "mdlm-cli-output",
   "release-candidate-gate", "requirement-trace-v2", "source-scopes", "review-lineage", "review-packet-stream", "review-binding-public", "digest-vectors", "review-checkpoint-resume", "direct-proposal-schema", "repository-lease-public", "aws-cdk-deployment",
 ];
-const release = ["maintenance-summary-public", "independent-verification-execution","docker-verification-dialogue", "direct-lifecycle-public", "verification-applicability-upgrade-public"];
+const release = ["maintenance-summary-public", "independent-verification-execution", "networked-verification","docker-verification-dialogue", "direct-lifecycle-public", "verification-applicability-upgrade-public"];
 export const rootTestManifest = Object.freeze([
   ...fast.map(name => ({file:`test/${name}.test.ts`, qualificationGate:"pr", runtimeClass:"cheap-in-process", weight:1})),
   ...release.map(name => ({file:`test/${name}.test.ts`, qualificationGate:"release", runtimeClass:"process-repository-safe", weight:1})),

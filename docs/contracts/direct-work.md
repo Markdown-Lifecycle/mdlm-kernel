@@ -253,6 +253,31 @@ exit codes and attempt state still record what reached AWS.
 A `deployment` proposal cites the receipt as `evidence.receipt` and links
 `deploys` to the exact product; the kernel fills the managed fields.
 
+## Networked verification against a deployment
+
+An independent verification activity may link `verified-against` to one exact
+deployment record of the package's `aws-cdk-deployment@1` type. That record must
+have outcome `pass`, and its `deployed_version` must be the executed product's
+source commit. Execution then runs the verifier on a per-run Docker `--internal`
+network instead of `--network none`. The kernel starts an egress proxy container,
+attached to that network and the default bridge, in a kernel-pinned Node image.
+The proxy accepts only HTTP `CONNECT` to the endpoint's `host:port` and refuses
+everything else. The verifier receives `HTTPS_PROXY`, `MDLM_ENDPOINT` (the
+deployment record's endpoint) and `MDLM_RUN_ID`, which is unique per execution;
+namespace any data the verifier creates with it. A verifier that ignores the proxy
+has no route out. The verifier gets no AWS credentials, and every other runtime
+constraint below is unchanged except the wait, which is fixed at 300 seconds.
+
+From the proxy container, the kernel sends `GET <endpoint><probe_path>` before the
+verifier starts and again after it stops. Each response must contain the deployed
+version. If the first probe disagrees, the verifier never starts. If the second
+disagrees, the deployment drifted during the run. Either way the outcome is
+`error`, never `fail`. The receipt's `network` field records the deployment
+revision and receipt, the endpoint, the version, the run ID, the proxy image and
+allowlist, both probes and the proxy's connection log (host, port, byte counts
+and times, never request or response bytes). A pass or fail result is published
+only when both recorded probes still match.
+
 `mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <commit>] --json`
 runs the same synth, validation, deploy and probe steps as `deployment run`, but
 only into a slot the deployment action's fixed payload lists in `dry_run_slots`
@@ -275,7 +300,7 @@ coverage.
 
 | Runtime constraint | Public execution behavior |
 | --- | --- |
-| Network | Docker `--network none`; external networking is unavailable. |
+| Network | Docker `--network none`; external networking is unavailable, except for an activity verified against a deployment (above). |
 | Filesystem and user | Read-only container root and source mounts; non-root user, all capabilities dropped and no new privileges. Independent verification uses the non-root caller's UID/GID, or `65534:65534` for a root caller. Product-owned verification uses `65534:65534`. |
 | Processes | Fixed Docker PID limit of 128. |
 | Shared memory | Writable `/dev/shm`, fixed at 128 MiB (`--shm-size=128m`). |
