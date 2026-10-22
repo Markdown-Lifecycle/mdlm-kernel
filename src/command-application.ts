@@ -804,7 +804,8 @@ async function dispatchCommand(
         const dryRunOperands = operands.filter((argument, index) => argument !== "--all" && !["--source", "--deployment"].includes(argument) && !["--source", "--deployment"].includes(operands[index - 1]!));
         const source = optionValues(arguments_, "--source"), deployment = optionValues(arguments_, "--deployment");
         const activities = optionValues(arguments_, "--activity");
-        if (dryRunOperands.length !== 3 || source.length > 1 || deployment.length > 1 || arguments_.filter(argument => argument === "--activity").length !== activities.length || (arguments_.includes("--source") && !source.length) || (arguments_.includes("--deployment") && !deployment.length) || [...source, ...deployment, ...activities].some(value => !value || value.startsWith("--"))) throw new Error("Expected execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>] [--deployment <dry-run-deployment>]");
+        const occurrences = (option: string) => arguments_.filter(argument => argument === option).length;
+        if (dryRunOperands.length !== 3 || source.length > 1 || deployment.length > 1 || occurrences("--activity") !== activities.length || occurrences("--source") !== source.length || occurrences("--deployment") !== deployment.length || [...source, ...deployment, ...activities].some(value => !value || value.startsWith("--"))) throw new Error("Expected execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>] [--deployment <dry-run-deployment>]");
         return {...await runExecutionDryRun(repositoryRoot, dryRunOperands[2]!, {activities, all: arguments_.includes("--all"), source: source[0], deployment: deployment[0]}), command: "execution.dry-run", diagnostics: []};
       }
       if (operands[1] === "run" && operands.length === 4) return {...await runDirectExecution(repositoryRoot, operands[2]!, operands[3]!, optionValue(arguments_, "--activity")), command: "execution.run", diagnostics: []};
@@ -818,7 +819,8 @@ async function dispatchCommand(
       const deploymentOperands = operands.filter((argument, index) => !["--stack", "--aws-profile", "--source"].includes(argument) && !["--stack", "--aws-profile", "--source"].includes(operands[index - 1]!));
       if (deploymentOperands[1] === "dry-run" && deploymentOperands.length === 3) {
         const stack = optionValues(arguments_, "--stack"), awsProfile = optionValues(arguments_, "--aws-profile"), source = optionValues(arguments_, "--source");
-        if (stack.length !== 1 || awsProfile.length !== 1 || source.length > 1 || (arguments_.includes("--source") && !source.length) || [...stack, ...awsProfile, ...source].some(value => !value || value.startsWith("--"))) throw new Error("deployment dry-run requires one --stack <dry-run-slot>, one --aws-profile apm-<project> and at most one --source <product-commit>");
+        const occurrences = (option: string) => arguments_.filter(argument => argument === option).length;
+        if (stack.length !== 1 || awsProfile.length !== 1 || source.length > 1 || occurrences("--stack") !== 1 || occurrences("--aws-profile") !== 1 || occurrences("--source") !== source.length || [...stack, ...awsProfile, ...source].some(value => !value || value.startsWith("--"))) throw new Error("deployment dry-run requires one --stack <dry-run-slot>, one --aws-profile apm-<project> and at most one --source <product-commit>");
         return {...await runDeploymentDryRun(repositoryRoot, deploymentOperands[2]!, {stack: stack[0]!, awsProfile: awsProfile[0]!, source: source[0]}), command: "deployment.dry-run", diagnostics: []};
       }
       if (deploymentOperands[1] === "run" && deploymentOperands.length === 4 && !arguments_.includes("--source")) {

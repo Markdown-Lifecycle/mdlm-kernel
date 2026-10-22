@@ -99,4 +99,11 @@ test("dry run rejects an activity option without a value instead of selecting ev
   const result = await executeCommandApplication(["execution", "dry-run", "IMP-P-r00001", "--activity"], os.tmpdir());
   expect(result.exitCode).toBe(1);
   expect(result.output).toContain("Expected execution dry-run");
+  // A repeated option without a value is refused rather than reusing the earlier value.
+  for (const extra of [["--source", "a".repeat(40), "--source"], ["--deployment", "dry-x", "--deployment"]]) {
+    expect((await executeCommandApplication(["execution", "dry-run", "IMP-P-r00001", ...extra], os.tmpdir())).output).toContain("Expected execution dry-run");
+  }
+  for (const extra of [["--stack"], ["--aws-profile"], ["--source", "a".repeat(40), "--source"]]) {
+    expect((await executeCommandApplication(["deployment", "dry-run", "IMP-P-r00001", "--stack", "dry-1", "--aws-profile", "apm-demo", ...extra], os.tmpdir())).output).toContain("deployment dry-run requires");
+  }
 });
