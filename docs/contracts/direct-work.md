@@ -51,6 +51,15 @@ only the archive and CLI, with no lifecycle or source repository access. Unknown
 versions or missing embedded references fail before output creation. Outputs
 are new files, and existing outputs are never overwritten.
 
+For repeated file contents at different paths or in different trees, use
+`--format shared-verifier-contents`. This emits `mdlm-review-context-archive@2`:
+ordered `verifierSourceTrees` retain each file's path and blob with a `contentRef`
+into embedded `verifierContents`. Each content entry contains exact `content` and
+optional `encoding`; only equal content and encoding share an entry. The same
+`review expand-context` command reconstructs every occurrence without repositories.
+This format can be larger for trees with little repetition; it is opt-in, and the
+existing `shared-verifier-trees` format remains available.
+
 Default context stdout and file exports remain expanded v1. Consumers expecting
 `verifierSources[].files` must expand an archive first. Export receipts still
 use `mdlm-review-export@1` and pin the actual saved bytes. Archives are transport,
