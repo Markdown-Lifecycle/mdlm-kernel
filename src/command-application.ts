@@ -1,4 +1,4 @@
-import {archiveReviewContext, expandReviewContextArchive} from "./review-context-archive.js";
+import {archiveReviewContents, archiveReviewContext, expandReviewContextArchive} from "./review-context-archive.js";
 import {writeJsonFile} from "./json-stream.js";
 import {previewProcessUpgrade, applyProcessUpgrade, settleProcessUpgrade} from "./process-upgrade.js";
 import { fileURLToPath } from "node:url";
@@ -53,7 +53,7 @@ Direct lifecycle work:
   mdlm deployment run <exact-product> <operation-id> --stack <slot> --aws-profile apm-<project> [--json]
   mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <product-commit>] [--json]
   mdlm deployment settlement <operation-id> [--json]
-  mdlm review context <action> [<exact-subject>] [--output <file> [--format shared-verifier-trees]] [--json]
+  mdlm review context <action> [<exact-subject>] [--output <file> [--format shared-verifier-trees|shared-verifier-contents]] [--json]
   mdlm review expand-context <archive-file> --output <new-file> [--json]
   mdlm review register <proposal-file> <verdict-file> [--json]
 
@@ -731,8 +731,8 @@ async function dispatchCommand(
   const exportingReview = ["review", "verification"].includes(arguments_[0]!) && arguments_[1] === "context";
   const expandingReview = arguments_[0] === "review" && arguments_[1] === "expand-context";
   const formatOptions = optionValues(arguments_, "--format");
-  if (arguments_.includes("--format") && (arguments_[0] !== "review" || arguments_[1] !== "context" || outputOptions.length !== 1 || arguments_.filter(arg => arg === "--format").length !== 1 || formatOptions.length !== 1 || formatOptions[0] !== "shared-verifier-trees")) {
-    return failure("review-format-invalid", "--format shared-verifier-trees requires review context --output <new-file>");
+  if (arguments_.includes("--format") && (arguments_[0] !== "review" || arguments_[1] !== "context" || outputOptions.length !== 1 || arguments_.filter(arg => arg === "--format").length !== 1 || formatOptions.length !== 1 || !["shared-verifier-trees", "shared-verifier-contents"].includes(formatOptions[0]!))) {
+    return failure("review-format-invalid", "--format shared-verifier-trees or shared-verifier-contents requires review context --output <new-file>");
   }
   if (arguments_.includes("--output") && (!(exportingReview || expandingReview || draftingProposal) || arguments_.filter(argument => argument === "--output").length !== 1 || outputOptions.length !== 1 || !outputOptions[0] || outputOptions[0].startsWith("--"))) {
     return failure("review-output-invalid", "--output requires one file path for context export or proposal draft");
@@ -880,7 +880,7 @@ async function dispatchCommand(
       const result = {...context, command: "review.context", diagnostics: []};
       if (!outputOptions.length) return result;
       const file = path.resolve(repositoryRoot, outputOptions[0]!);
-      const saved = formatOptions.length ? archiveReviewContext(result) : result;
+      const saved = formatOptions[0] === "shared-verifier-contents" ? archiveReviewContents(result) : formatOptions.length ? archiveReviewContext(result) : result;
       const written = await writeJsonFile(file, saved, 2);
       return {
         ok: true, command: "review.context", contract: "mdlm-review-export@1",

@@ -375,7 +375,7 @@ test("saved review context provides exact handoff metadata without replacing exp
 }, 60_000);
 
 
-test("shared verifier tree archive expands complete review evidence without source repositories", async () => {
+test.each(["shared-verifier-trees", "shared-verifier-contents"])("%s archive expands complete review evidence without source repositories", async format => {
   const {executeCommandApplication} = await import("../src/command-application.js");
   const selection = await import("../src/direct-proposal.js");
   const {reviewPacketDigest} = await import("../src/external-review.js");
@@ -385,7 +385,8 @@ test("shared verifier tree archive expands complete review evidence without sour
   const files = [
     {path: "verify.ts", blob: "1".repeat(40), content: "// Full verifier source\n".repeat(1000)},
     {path: "screen.png", blob: "2".repeat(40), content: screenshot.toString("base64"), encoding: "base64"},
-    {path: "second-screen.png", blob: "2".repeat(40), content: screenshot.toString("base64"), encoding: "base64"},
+    {path: "second-screen.png", blob: "3".repeat(40), content: screenshot.toString("base64"), encoding: "base64"},
+    {path: "encoded-as-text.txt", blob: "4".repeat(40), content: screenshot.toString("base64")},
   ];
   // Selection is frozen at the export boundary. Native source selection and
   // registration have their existing regressions; this checks real CLI file I/O.
@@ -397,7 +398,7 @@ test("shared verifier tree archive expands complete review evidence without sour
     verifierSources: [
       {activity: "VFY-a", sourceCommit: "a".repeat(40), files},
       {activity: "VFY-b", sourceCommit: "a".repeat(40), files},
-      {activity: "VFY-c", sourceCommit: "b".repeat(40), files: [{...files[0], content: "// Changed full verifier source\n"}]},
+      {activity: "VFY-c", sourceCommit: "b".repeat(40), files: [{...files[0], content: "// Changed full verifier source\n"}, files[2], files[2]]},
     ],
     verificationReceipts: [{result: "VER-a", receipt: {occurrence: 1, contentBase64: screenshot.toString("base64")}}, {result: "VER-b", receipt: {occurrence: 2, contentBase64: screenshot.toString("base64")}}],
   };
@@ -417,11 +418,17 @@ test("shared verifier tree archive expands complete review evidence without sour
     const expandedBytes = await fs.readFile(expandedFile);
     expect(JSON.parse(expandedBytes.toString())).toEqual(ordinary);
     assertPin(expanded, expandedBytes, expandedFile);
-    const exported = await cli(["review", "context", "review@1", "IMP-exact", "--output", archiveFile, "--format", "shared-verifier-trees"]);
+    const exported = await cli(["review", "context", "review@1", "IMP-exact", "--output", archiveFile, "--format", format]);
     const archiveBytes = await fs.readFile(archiveFile), archive = JSON.parse(archiveBytes.toString());
     assertPin(exported, archiveBytes, archiveFile);
-    expect(archive.contract).toBe("mdlm-review-context-archive@1");
-    expect(archive.verifierSourceTrees).toEqual([files, context.verifierSources[2]!.files]);
+    expect(archive.contract).toBe(format === "shared-verifier-trees" ? "mdlm-review-context-archive@1" : "mdlm-review-context-archive@2");
+    if (format === "shared-verifier-trees") {
+      expect(archive.verifierSourceTrees).toEqual([files, context.verifierSources[2]!.files]);
+    } else {
+      expect(archive.verifierContents).toHaveLength(4);
+      expect(archive.verifierSourceTrees[0].map((f: any) => f.contentRef)).toEqual([0, 1, 1, 2]);
+      expect(archive.verifierSourceTrees[1].map((f: any) => f.contentRef)).toEqual([3, 1, 1]);
+    }
     expect(archive.verifierSources.map((s: any) => s.filesRef)).toEqual([0, 0, 1]);
     expect(archiveBytes.length).toBeLessThan(expandedBytes.length);
     frozen.mockRestore(); // The reader must not call native selection at all.
@@ -434,7 +441,19 @@ test("shared verifier tree archive expands complete review evidence without sour
     expect(Buffer.from(full.verifierSources[1].files[2].content, "base64")).toEqual(screenshot);
     await cli(["review", "expand-context", "archive.json", "--output", recoveredFile], offline, 1);
     expect(await fs.readFile(recoveredFile)).toEqual(recoveredBytes);
-    for (const broken of [{...archive, contract: "mdlm-review-context-archive@2"}, {...archive, verifierSources: [{...archive.verifierSources[0], filesRef: 99}]}]) {
+    const malformed = [
+      {...archive, contract: "mdlm-review-context-archive@999"},
+      {...archive, verifierSources: [{...archive.verifierSources[0], filesRef: 99}]},
+    ];
+    if (format === "shared-verifier-contents") {
+      for (const contentRef of [-1, 0.5, "0", 99, undefined]) malformed.push({
+        ...archive, verifierSourceTrees: [[{...archive.verifierSourceTrees[0][0], contentRef}]],
+      });
+      malformed.push({...archive, verifierContents: [{content: "bad", encoding: "hex"}]});
+      malformed.push({...archive, verifierContents: null});
+      malformed.push({...archive, verifierSourceTrees: [[{...archive.verifierSourceTrees[0][0], content: "injected"}]]});
+    }
+    for (const broken of malformed) {
       await fs.writeFile(path.join(offline, "broken.json"), JSON.stringify(broken));
       await cli(["review", "expand-context", "broken.json", "--output", "refused.json"], offline, 1);
       await expect(fs.stat(path.join(offline, "refused.json"))).rejects.toMatchObject({code: "ENOENT"});
