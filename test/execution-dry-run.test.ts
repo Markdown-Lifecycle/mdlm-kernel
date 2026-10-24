@@ -59,6 +59,14 @@ test("dry run reruns only activities whose inputs changed and its results are ne
     const latest = binding(third, {formalFiles: ["app.py"], image: "img@sha256:" + "b".repeat(64)}, newer);
     expect(await run(latest)).toMatchObject({cache: "miss", invalidatedBy: ["runtime-changed"]});
 
+    // A targeted dry-run deployment reruns only when its template or asset digests change.
+    const deployed = (template: string) => ({templateSha256: template, assets: [{id: "abc", packaging: "zip", path: "asset.abc", sha256: "1".repeat(64)}]});
+    const target = async (template: string) => (await dryRunActivities(cache, [{product: imp, activity, binding: latest, deployment: deployed(template)}], false, execute))[0]!;
+    expect(await target("a".repeat(64))).toMatchObject({cache: "miss", invalidatedBy: ["deployment-changed"]});
+    expect(await target("a".repeat(64))).toMatchObject({cache: "hit"});
+    expect(await target("b".repeat(64))).toMatchObject({cache: "miss", invalidatedBy: ["deployment-changed"]});
+    expect(await run(latest)).toMatchObject({cache: "miss", invalidatedBy: ["deployment-changed"]});
+
     // A container that never started is not cached and does not replace the previous result.
     execute.mockResolvedValueOnce({started: false, outcome: "error", diagnostic: "docker unavailable", startedAt: "now"} as unknown as DockerVerificationResult);
     expect(await run(latest, true)).toMatchObject({outcome: "error", diagnostic: "docker unavailable"});
@@ -87,8 +95,42 @@ test("dry run reruns only activities whose inputs changed and its results are ne
   } finally { await rm(root, {recursive: true, force: true}); }
 });
 
+test("dry run keys an activity on its declared product paths only", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "mdlm-dry-run-paths-"));
+  const product = path.join(root, "product"), verifier = path.join(root, "verifier"), cache = path.join(root, "cache");
+  try {
+    for (const cwd of [product, verifier]) { execFileSync("git", ["init", "-q", cwd]); }
+    await writeFile(path.join(product, "api.py"), "print(1)\n");
+    await writeFile(path.join(product, "ui.py"), "print(1)\n");
+    await writeFile(path.join(verifier, "verify.py"), "# checks\n");
+    const verifierCommit = commit(verifier);
+    const activity = {id: "VFY-A", revision_id: "VFY-A-r00001", type: "VFY", body: "", links: [],
+      payload: {cases: [{id: "c1"}], product_paths: ["api.*"], repository_path: verifier, source_commit: verifierCommit, verification_image: "img@sha256:" + "a".repeat(64)}} as unknown as DatumEnvelope;
+    const binding = (sourceCommit: string): VerificationBinding => ({
+      operation: "dry-run", package: {reference: "fixture@1"}, inputs: [], repositoryPath: product, sourceCommit, image: "img@sha256:" + "a".repeat(64),
+      independentVerification: {activityRevision: activity.revision_id, repositoryPath: verifier, sourceCommit: verifierCommit, scriptPath: "verify.py", command: ["python3", "verify.py"], caseIds: ["c1"], resultsPath: "results.json"},
+    });
+    const execute = vi.fn(async (_: DockerVerificationInput) => ({started: true, outcome: "pass", startedAt: "now", caseResults: [{case_id: "c1", outcome: "pass", actual_results: ["ok"], evidence_refs: []}]} as unknown as DockerVerificationResult));
+    const run = async () => (await dryRunActivities(cache, [{product: {id: "IMP-P", revision_id: "IMP-P-r00001"} as unknown as DatumEnvelope, activity, binding: binding(commit(product))}], false, execute))[0]!;
+
+    expect(await run()).toMatchObject({cache: "miss", productInputs: {scope: "activity-paths"}});
+    await writeFile(path.join(product, "ui.py"), "print(2)\n");
+    expect(await run()).toMatchObject({cache: "hit", invalidatedBy: []});
+    await writeFile(path.join(product, "api.py"), "print(2)\n");
+    expect(await run()).toMatchObject({cache: "miss", invalidatedBy: ["product-inputs-changed"]});
+    expect(execute).toHaveBeenCalledTimes(2);
+  } finally { await rm(root, {recursive: true, force: true}); }
+});
+
 test("dry run rejects an activity option without a value instead of selecting every activity", async () => {
   const result = await executeCommandApplication(["execution", "dry-run", "IMP-P-r00001", "--activity"], os.tmpdir());
   expect(result.exitCode).toBe(1);
   expect(result.output).toContain("Expected execution dry-run");
+  // A repeated option without a value is refused rather than reusing the earlier value.
+  for (const extra of [["--source", "a".repeat(40), "--source"], ["--deployment", "dry-x", "--deployment"]]) {
+    expect((await executeCommandApplication(["execution", "dry-run", "IMP-P-r00001", ...extra], os.tmpdir())).output).toContain("Expected execution dry-run");
+  }
+  for (const extra of [["--stack"], ["--aws-profile"], ["--source", "a".repeat(40), "--source"]]) {
+    expect((await executeCommandApplication(["deployment", "dry-run", "IMP-P-r00001", "--stack", "dry-1", "--aws-profile", "apm-demo", ...extra], os.tmpdir())).output).toContain("deployment dry-run requires");
+  }
 });

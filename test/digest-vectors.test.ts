@@ -6,7 +6,7 @@ import path from "node:path";
 import {expect, test} from "vitest";
 import {parse} from "yaml";
 import {directDigest} from "../src/direct-proposal.js";
-import {reviewDigest, reviewPacketDigest} from "../src/external-review.js";
+import {reviewBinding, reviewDigest, reviewPacketDigest} from "../src/external-review.js";
 import {canonicalChunks} from "../src/json-stream.js";
 import {processPackageDigest} from "../src/process-package-digest.js";
 import vectors from "./fixtures/digest-vectors.json" with {type: "json"};
@@ -43,6 +43,12 @@ test("published digest vectors match the current kernel", async () => {
   }
   expect(vectors.reviewContext[0]!.contextSha256).toBe(vectors.reviewContext[1]!.contextSha256);
   expect(vectors.reviewContext[0]!.contextSha256).not.toBe(vectors.reviewContext[2]!.contextSha256);
+  for (const vector of vectors.reviewBinding) {
+    expect([...canonicalChunks({contract: "mdlm-review-binding@1", repository: vector.repository, context: {...vector.context, snapshot: undefined}})].join("")).toBe(vector.preimage);
+    expect(reviewDigest(vector.preimage)).toBe(vector.reviewBinding);
+    expect(reviewBinding(vector.repository, vector.context as unknown as Parameters<typeof reviewBinding>[1])).toBe(vector.reviewBinding);
+  }
+  expect(vectors.reviewBinding[0]!.reviewBinding).toBe(vectors.reviewBinding[1]!.reviewBinding);
   for (const vector of vectors.reviewBytes) expect(reviewDigest(vector.bytes)).toBe(vector.sha256);
   for (const vector of vectors.registryKey) expect(`${reviewDigest(vector.repositoryRealpath)}-${vector.operation}.json`).toBe(vector.file);
 });
@@ -111,8 +117,8 @@ test("a lifecycle repository's reported digests follow the documented preimages"
     const activity = cli(["proposal", "submit", (await proposal(plan, "plan")).file]).revisions[0];
     commit(repository);
 
-    // Registration binds the review context without ok/command/diagnostics, plus exact verdict and proposal bytes,
-    // in a registry file keyed by the lifecycle repository's absolute real path.
+    // Registration binds the review context without ok/command/diagnostics or its snapshot, in its repository,
+    // plus exact verdict and proposal bytes, in a registry file keyed by the lifecycle repository's absolute real path.
     const review = cli(["expectations", "show", "review-verification", activity]);
     review.candidates[0].payload = {...review.candidates[0].payload, title: "Adequacy review", outcome: "fail", findings: "No expected count", coverage_assessments: [{target: experiment, disposition: "needs-change", rationale: "Expected result is not observable"}]};
     const reviewProposal = await proposal(review, "review"), verdict = await write("verdict.json", {candidates: review.candidates});
@@ -120,7 +126,11 @@ test("a lifecycle repository's reported digests follow the documented preimages"
     cli(["review", "register", reviewProposal.file, verdict.file], true);
     const realRepository = await fs.realpath(repository);
     const registered = JSON.parse(await fs.readFile(path.join(registry, `${hex(realRepository)}-review.json`), "utf8"));
-    expect(registered.contextSha256).toBe(reviewPacketDigest(context));
+    const repositoryIdentity = `git-commit:${git(repository, "rev-list", "--first-parent", "--max-parents=0", "HEAD")}`;
+    expect(registered.contextSha256).toBe(reviewPacketDigest({contract: "mdlm-review-binding@1", repository: repositoryIdentity, context: {...context, snapshot: undefined}}));
+    const drafted = path.join(root, "review-draft.json");
+    cli(["proposal", "draft", "review-verification", activity, "--operation", "review-draft", "--output", drafted]);
+    expect(JSON.parse(await fs.readFile(drafted, "utf8")).reviewBinding).toBe(`sha256:${registered.contextSha256}`);
     expect(registered.verdictSha256).toBe(hex(verdict.bytes));
     expect(registered.proposalSha256).toBe(hex(reviewProposal.bytes));
     expect(context.action.when.contract.definitionPath.startsWith(`${realRepository}/.lifecycle/packages/`)).toBe(true);

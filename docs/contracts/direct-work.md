@@ -11,17 +11,18 @@ CLI:
 - `mdlm proposal submit <file|-> [--authority <name>] --json`
 - `mdlm proposal settlement <operation> --json`
 - `mdlm execution run <exact-implementation> <operation> --json`
-- `mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <commit>] --json`
+- `mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <commit>] [--deployment <dry-run-deployment>] --json`
 - `mdlm execution settlement <operation> --json`
 - `mdlm deployment run <exact-product> <operation> --stack <slot> --aws-profile apm-<project> --json`
+- `mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <commit>] --json`
 - `mdlm deployment settlement <operation> --json`
-- `mdlm deployment teardown <exact-deployment> <operation> --aws-profile apm-<project> --json`
+- `mdlm deployment teardown <exact-deployment|dry-run-id> <operation> --aws-profile apm-<project> --json`
 - `mdlm deployment teardown <operation> --orphan-stack <slot> | --orphan-resource <arn> [--yes] --aws-profile apm-<project> --json`
 - `mdlm deployment orphans --aws-profile apm-<project> --json`
 - `mdlm review context <action> <exact-subject> --json`
 - `mdlm review register <proposal-file> <verdict-file> --json`
 
-A proposal names the caller's operation identity, package action, exact package and snapshot, optional subject/input revisions, candidates and evidence. The snapshot digest covers the lifecycle repository identity, the first-parent root commit of `HEAD`, together with the package and data, so a proposal or review registration drafted in another repository is rejected even when both hold identical data. `mdlm init` records a random nonce in that commit. Repositories initialized earlier derive the same identity from their existing root commit; two such repositories initialized in the same second with the same package share it. A clone or copy of a lifecycle repository shares its identity, so create each lane with `mdlm init`, never by copying a template repository. [Digest preimages](digests.md) documents the exact snapshot and other digest inputs. Candidate local references use `$<localId>` for an exact revision and `$<localId>.id` for its stable ID. A revision candidate supplies `predecessor` as an exact prior revision. The kernel allocates identities, resolves references and publishes the entire batch atomically. Candidate `created_by`, revision IDs and managed fields are never authored.
+A proposal names the caller's operation identity, package action, exact package and snapshot, optional subject/input revisions, candidates and evidence. The snapshot digest covers the lifecycle repository identity, the first-parent root commit of `HEAD`, together with the package and data, so a proposal or review registration drafted in another repository is rejected even when both hold identical data. `mdlm init` records a random nonce in that commit. Repositories initialized earlier derive the same identity from their existing root commit; two such repositories initialized in the same second with the same package share it. A clone or copy of a lifecycle repository shares its identity, so create each lane with `mdlm init`, never by copying a template repository. A review proposal from `mdlm proposal draft` also carries `reviewBinding`, the digest of its review context and repository; registration and submission check that binding instead of the snapshot, so publications outside the review's context leave it valid ([ADR 0011](../adr/0011-bind-reviews-to-their-context-not-the-snapshot.md)). [Digest preimages](digests.md) documents the exact snapshot and other digest inputs. Candidate local references use `$<localId>` for an exact revision and `$<localId>.id` for its stable ID. A revision candidate supplies `predecessor` as an exact prior revision. The kernel allocates identities, resolves references and publishes the entire batch atomically. Candidate `created_by`, revision IDs and managed fields are never authored.
 
 Core owns read-only missing-data discovery and eligibility. Domain module exports `finalizeDirectDomain(context)` for generated fields/data and associated semantic validation; finalization takes `DirectFinalizationContext` and returns `Promise<DirectFinalizationResult>`. Errors reject without publication. The domain module owns requirement, source and engineering constraints.
 
@@ -191,18 +192,33 @@ lineage. An activity reruns when any cache component differs from its last
 completed run: activity text (payload other than verifier location, commit and
 image, plus body and links), verifier source tree, runtime (image and kernel
 version), or product inputs. Product inputs are the declared `formal_files` of a
-partial-acceptance product, otherwise the whole committed product tree. Committed
+partial-acceptance product, otherwise the whole committed product tree. An
+activity may narrow them with an optional `product_paths` payload field: a
+nonempty array of globs (Node `path.matchesGlob` syntax, relative to the product
+root, for example `["src/api/**", "package.json"]`). List shared files such as
+manifests and lockfiles explicitly. The dry-run key then covers only committed
+files matching a glob (within `formal_files`, when declared), so a change outside
+them keeps the activity's cache hit. The field is the activity author's claim and
+only dry runs use it: the runtime still mounts the same product files, and
+`execution run` ignores it. Without the field the dry run keys on all product
+inputs as before. Committed
 `.gitattributes` entries count as inputs, and a product or verifier whose
 attributes use `export-subst` is also keyed on its commit.
 `--all` reruns every selected activity. `--source` runs a committed candidate
 product commit in the product's repository instead of the published one. Runs
-whose container never started are not cached.
+whose container never started are not cached. `--deployment <dry-run-deployment>`
+targets a passing, unexpired dry-run deployment of the same product repository
+and commit (see `deployment dry-run` below). Its template and asset digests join
+the cache key, so a redeploy of the same artifact keeps the activity's cache hit.
+A changed digest, or adding or dropping the target, reruns it as
+`deployment-changed`.
 
 The `mdlm-execution-dry-run@1` response has `credit: false`, `ready` (every
 selected activity passed), a `summary` count, and per activity its `outcome`,
 `failingCases`, `cache` (`hit` or `miss`) and `invalidatedBy` (`no-cached-result`,
 `forced`, `activity-text-changed`, `verifier-changed`, `runtime-changed`,
-`product-inputs-changed` or `inputs-unavailable`). Without `--json` it prints a
+`product-inputs-changed` or `inputs-unavailable`), and `productInputs.scope`
+(`activity-paths`, `declared-paths` or `whole-tree`). Without `--json` it prints a
 short summary. The receipt reader used by every credit path rejects a stored
 dry-run result, so it cannot become execution evidence even when registered
 under an execution ref.
@@ -258,14 +274,15 @@ A `deployment` proposal cites the receipt as `evidence.receipt` and links
 Every deployment carries four tags, applied by `cdk deploy --tags` so the
 template digest stays a function of the commit: `mdlm:repository` (the lifecycle
 repository identity), `mdlm:deployment` (the deployment operation, which the
-published record's receipt names), `mdlm:mode` (`credit`) and `mdlm:expires-at`
+published record's receipt names, or the dry-run deployment ID), `mdlm:mode`
+(`credit`, or `dry-run` for `deployment dry-run`) and `mdlm:expires-at`
 (the receipt's `expiresAt`). The deploy is an `error` unless the stack carries
 them. The receipt records the stack's inventory from `ListStackResources`
 (logical ID, type and physical ID of each resource).
 
 A stack in the slot pool, or a resource tagged with this repository, is an
-orphan when its `mdlm:deployment` names no published deployment record in the
-repository, when that deployment already has a passing teardown, or when its
+orphan when its `mdlm:deployment` names no published deployment record and no
+completed dry-run deployment record in the repository, when that deployment already has a passing teardown, or when its
 `mdlm:expires-at` has passed. A slot stack tagged for another repository is left
 to that repository. A top-level resource in a live deployment's recorded
 inventory that still exists after its stack is gone is also an orphan, even
@@ -274,7 +291,8 @@ down; deleting one orphan resource does not. `mdlm deployment orphans` lists orp
 before every deploy (recorded as `orphans` in the receipt) and in every teardown.
 It only reports.
 
-`mdlm deployment teardown <exact-deployment> <operation>` deletes the recorded
+`mdlm deployment teardown <exact-deployment> <operation>` (or a dry-run
+deployment ID, including an interrupted one, in place of the record) deletes the recorded
 stack by stack ID, never by slot name, and passes only when the stack is
 `DELETE_COMPLETE`, the tag query for its deployment is empty, and every top-level
 resource in its inventory (Lambda function, HTTP API, DynamoDB table, log group)
@@ -288,6 +306,44 @@ non-interactively). Teardown receipts are write-once under
 `refs/mdlm/teardown/<operation>`, secret-scanned like deployment receipts, and an
 interrupted teardown is not re-run under the same operation.
 
+## Networked verification against a deployment
+
+An independent verification activity may link `verified-against` to one exact
+deployment record of the package's `aws-cdk-deployment@1` type. That record must
+have outcome `pass`, and its `deployed_version` must be the executed product's
+source commit. Execution then runs the verifier on a per-run Docker `--internal`
+network instead of `--network none`. The kernel starts an egress proxy container,
+attached to that network and the default bridge, in a kernel-pinned Node image.
+The proxy accepts only HTTP `CONNECT` to the endpoint's `host:port` and refuses
+everything else. The verifier receives `HTTPS_PROXY`, `MDLM_ENDPOINT` (the
+deployment record's endpoint) and `MDLM_RUN_ID`, which is unique per execution;
+namespace any data the verifier creates with it. A verifier that ignores the proxy
+has no route out. The verifier gets no AWS credentials, and every other runtime
+constraint below is unchanged except the wait, which is fixed at 300 seconds.
+
+From the proxy container, the kernel sends `GET <endpoint><probe_path>` before the
+verifier starts and again after it stops. Each response must contain the deployed
+version. If the first probe disagrees, the verifier never starts. If the second
+disagrees, the deployment drifted during the run. Either way the outcome is
+`error`, never `fail`. The receipt's `network` field records the deployment
+revision and receipt, the endpoint, the version, the run ID, the proxy image and
+allowlist, both probes and the proxy's connection log (host, port, byte counts
+and times, never request or response bytes). A pass or fail result is published
+only when both recorded probes still match.
+
+`mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <commit>] --json`
+runs the same synth, validation, deploy and probe steps as `deployment run`, but
+only into a slot the deployment action's fixed payload lists in `dry_run_slots`
+(a subset of `stack_slots`), with a lifetime of at most 2 hours. `--source`
+deploys a committed candidate commit in the product's repository instead of the
+published one. Each call gets a new dry-run deployment ID (`dry-<uuid>`), used as
+the binding's operation. It publishes no lifecycle data, takes no repository lock
+and registers no refs. Its record, `.lifecycle/work/deployments/<id>.json` with
+contract `mdlm-deployment-dry-run@1` and `credit: false`, is written as `started`
+before anything runs and replaced by the completed record, which holds the same
+receipt fields. The deployment receipt reader refuses it, so a dry-run deployment
+can never fill a deployment record.
+
 ## Native verification runtime
 
 `mdlm execution run` executes committed source in a disposable Docker container.
@@ -297,7 +353,7 @@ coverage.
 
 | Runtime constraint | Public execution behavior |
 | --- | --- |
-| Network | Docker `--network none`; external networking is unavailable. |
+| Network | Docker `--network none`; external networking is unavailable, except for an activity verified against a deployment (above). |
 | Filesystem and user | Read-only container root and source mounts; non-root user, all capabilities dropped and no new privileges. Independent verification uses the non-root caller's UID/GID, or `65534:65534` for a root caller. Product-owned verification uses `65534:65534`. |
 | Processes | Fixed Docker PID limit of 128. |
 | Shared memory | Writable `/dev/shm`, fixed at 128 MiB (`--shm-size=128m`). |
@@ -402,7 +458,7 @@ an error regardless of the script's exit status.
 
 For an `independent-result` action, optional `--activity <exact-activity>` selects one exact revision from the subject's verification activities and adds its `evaluates` link to the capability-bound result candidate. Existing fixed links and envelope bindings remain unchanged. An invalid, conflicting or inapplicable selection fails before output creation. Omitting the option adds the exact `evaluates` link when the subject selects exactly one verification activity, using the same validation. Zero or multiple selected activities preserve the ordinary candidate skeleton. An explicit selection takes precedence over this default. This only prepares the link; receipt selection and submission's exact receipt/activity validation remain unchanged.
 
-The `mdlm-proposal-draft@1` handoff reports `export.path`, `export.bytes`, `export.exportSha256`, operation, action, package, snapshot, optional subject and inputs, plus authoring instructions and the guidance command arguments. The digest describes the initial saved bytes; editing changes it. Relative paths follow existing CLI file resolution. Exclusive creation preserves existing files. Drafting leaves lifecycle data unchanged and does not reserve the snapshot or operation. Normal submit validation and settlement remain authoritative.
+The `mdlm-proposal-draft@1` handoff reports `export.path`, `export.bytes`, `export.exportSha256`, operation, action, package, snapshot, `reviewBinding` for an independently reviewed `review` action whose outputs are all declared review types, optional subject and inputs, plus authoring instructions and the guidance command arguments. The digest describes the initial saved bytes; editing changes it. Relative paths follow existing CLI file resolution. Exclusive creation preserves existing files. Drafting leaves lifecycle data unchanged and does not reserve the snapshot or operation. Normal submit validation and settlement remain authoritative.
 
 ```sh
 mdlm expectations show draft-requirements --json

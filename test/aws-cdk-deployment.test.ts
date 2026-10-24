@@ -10,11 +10,12 @@ import { installedProcessPackageRoot } from "../src/installed-process-package.js
 import { initializeRepositoryFromProcessPackage } from "../src/repository-initialization.js";
 import { loadProcessPackage } from "../src/index.js";
 import { runDeploymentReceipt } from "../src/aws-cdk-deployment.js";
+import { requireDeploymentDryRun } from "../src/deployment-dry-run.js";
 
 const run = promisify(execFile);
 const config = {
   synth_image: `cdk-synth@sha256:${"c".repeat(64)}`, cdk_cli_version: "2.1000.0", cdk_app_path: "infra", region: "us-east-1", apm_project: "mdlm-demo",
-  stack_slots: ["mdlm-demo-credit", "mdlm-demo-dry-1"], output_allowlist: ["ApiEndpoint"], endpoint_output: "ApiEndpoint", probe_path: "/version", max_lifetime_minutes: 120,
+  stack_slots: ["mdlm-demo-credit", "mdlm-demo-dry-1"], dry_run_slots: ["mdlm-demo-dry-1"], output_allowlist: ["ApiEndpoint"], endpoint_output: "ApiEndpoint", probe_path: "/version", max_lifetime_minutes: 240,
   resource_allowlist: ["AWS::Lambda::Function", "AWS::ApiGatewayV2::Api", "AWS::DynamoDB::Table", "AWS::Logs::LogGroup"],
 };
 
@@ -365,6 +366,36 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     const stacksBefore = JSON.stringify((await aws()).stacks);
     expect((await teardown(leakDpl, "teardown-leak")).json.value.oid).toBe(torn.json.value.oid);
     expect(JSON.stringify((await aws()).stacks)).toBe(stacksBefore);
+
+    // A dry run deploys only to a dry-run slot with a 2-hour lifetime, registers no refs and is never deployment evidence.
+    const dryRun = (stack: string) => cli("deployment", "dry-run", products.ok!.revision, "--stack", stack, "--aws-profile", "apm-mdlm-demo");
+    expect((await dryRun("mdlm-demo-credit")).json.diagnostics[0].message).toContain("not one of the package's dry-run slots");
+    const dry = (await dryRun("mdlm-demo-dry-1")).json;
+    expect(dry, JSON.stringify(dry)).toMatchObject({ok: true, contract: "mdlm-deployment-dry-run@1", credit: false, id: expect.stringMatching(/^dry-/),
+      value: {state: "completed", binding: {contract: "mdlm-deployment-dry-run@1", operation: dry.id, stack: "mdlm-demo-dry-1", config: {max_lifetime_minutes: 120}}, result: {outcome: "pass", stack: {name: "mdlm-demo-dry-1"}, assembly: result.assembly}}});
+    expect(git(repository, "for-each-ref", `refs/mdlm/deployment/${dry.id}`)).toBe("");
+    expect(git(repository, "status", "--porcelain")).toBe("");
+    const dryOid = git(repository, "hash-object", "-w", dry.record);
+    git(repository, "update-ref", `refs/mdlm/deployment/${dry.id}/attempt-1-receipt`, dryOid);
+    const dryCited = await draft("deploy-product", "record-dry-run");
+    Object.assign(dryCited, {candidates: record.candidates, evidence: {receipt: `git-blob:${dryOid}`}});
+    await fs.writeFile(path.join(root, "dry-cited.json"), JSON.stringify(dryCited));
+    expect((await cli("proposal", "submit", path.join(root, "dry-cited.json"))).json.diagnostics[0].message).toContain("not a deployment receipt");
+    // Execution dry runs may target it only for the commit it deployed, and key on its digests.
+    expect(await requireDeploymentDryRun(repository, dry.id, {repositoryPath: product, sourceCommit: products.ok!.commit})).toEqual({id: dry.id, assembly: result.assembly});
+    await expect(requireDeploymentDryRun(repository, dry.id, {repositoryPath: product, sourceCommit: products.leak!.commit})).rejects.toThrow("not product commit");
+
+    // A dry run is tagged as one, ran the orphan check, is no orphan while its record is live, and tears down from its record.
+    expect(dry.value.result.tags).toMatchObject({"mdlm:deployment": dry.id, "mdlm:mode": "dry-run"});
+    expect(dry.value.result.orphans.orphans.some((o: any) => o.deployment === "deploy-mismatch")).toBe(true);
+    expect((await cli("deployment", "orphans", ...profile)).json.value.orphans.some((o: any) => o.deployment === dry.id)).toBe(false);
+    expect((await teardown(dry.id, "teardown-dry")).json.value.receipt.result).toMatchObject({outcome: "pass", deployment: dry.id, stack: {status: "DELETE_COMPLETE"}, remaining: {tagged: [], inventory: []}});
+
+    // The template policy applies to dry runs too: nothing reaches AWS.
+    const dryPolicy = (await cli("deployment", "dry-run", products.custom!.revision, "--stack", "mdlm-demo-dry-1", ...profile)).json.value.result;
+    expect([dryPolicy.outcome, dryPolicy.phase, dryPolicy.deployAttempted, dryPolicy.access]).toEqual(["error", "validation", false, undefined]);
+    expect(dryPolicy.diagnostic).toContain("template policy: Cleanup (Custom::S3AutoDeleteObjects) is a custom resource");
+
 
     // --orphan-stack deletes only a reported orphan in the slot pool.
     expect((await cli("deployment", "teardown", "orphan-empty", "--orphan-stack", "mdlm-demo-dry-1", ...profile)).json.value.receipt.result.diagnostic).toContain("holds no orphan");

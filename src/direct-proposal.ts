@@ -13,7 +13,7 @@ import { resolvePrompt } from "./direct-prompt.js";
 import { evaluateExpressionValue } from "./evaluator.js";
 import { compileExpressionValue } from "./expression.js";
 import { finalizeDirectDomain } from "./direct-domain.js";
-import { validateDirectAuthority, buildDirectReviewContext, registerDirectReview, type DirectAuthorityEvidence } from "./direct-authority.js";
+import { validateDirectAuthority, buildDirectReviewContext, registerDirectReview, directReviewBinding, bindsReviewContext, type DirectAuthorityEvidence } from "./direct-authority.js";
 import { readVerificationReceiptBlob, requireCoherentVerificationResult, validateVerificationReceipt, type VerificationBinding, runVerificationReceipt, verificationRef } from "./verification-receipt.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
 import { requirementTraceBinding } from "./requirement-trace.js";
@@ -87,7 +87,7 @@ export function directContext(current: State, reference: string, subject?: strin
   const action=resolveAction(current,reference);
   const work=available(current).find(item=>item.action===actionRef(action)&&item.subject===subject);
   if (!work) fail("This action is not currently eligible for this exact subject; refresh expectations");
-  return {root:current.root,pkg:current.pkg,package:current.package,snapshot:current.snapshot,data:current.data,authoringSelections:current.authoringSelections,action,...(subject?{subject}:{}),inputs:work.inputs??{}};
+  return {root:current.root,pkg:current.pkg,package:current.package,snapshot:current.snapshot,repository:current.repository,data:current.data,authoringSelections:current.authoringSelections,action,...(subject?{subject}:{}),inputs:work.inputs??{}};
 }
 /** Every fixed relation selects the exact complete input set, including multiplicity. */
 export function validateFixedContextLinks(links: DatumEnvelope["links"], required: DatumEnvelope["links"]) {
@@ -185,15 +185,18 @@ export async function draftDirectProposal(root: string, action: string, subject:
     if (existing.length && (existing.length !== 1 || existing[0]!.target !== activity)) fail("Draft activity conflicts with fixed evaluates links");
     if (!existing.length) result.links.push({type: "evaluates", target: activity});
   }
+  // A review binds its own context instead of the whole snapshot (ADR 0011).
+  const reviewBinding = bindsReviewContext(context) ? directReviewBinding(context, await buildDirectReviewContext(context)) : undefined;
   return {
-    operation, action: selected.action, package: selected.package, snapshot: selected.snapshot,
+    operation, action: selected.action, package: selected.package, snapshot: selected.snapshot, ...(reviewBinding ? {reviewBinding} : {}),
     ...(selected.subject ? {subject: selected.subject} : {}), inputs: selected.inputs, candidates: selected.candidates,
     ...(selected.authority?.kind === "stakeholder" ? {evidence: {authority: [selected.authority.name]}} : {}),
   };
 }
 export function parseDirectProposal(source:string):DirectProposal {
   const p:unknown=JSON.parse(source);
-  if(!object(p)||Object.keys(p).some(k=>!["operation","action","package","snapshot","subject","inputs","candidates","evidence"].includes(k))||typeof p.operation!=="string"||typeof p.action!=="string"||!object(p.package)||typeof p.snapshot!=="string"||!Array.isArray(p.candidates)||!p.candidates.length) fail("Expected operation, action, exact package/snapshot and candidate batch");
+  if(!object(p)||Object.keys(p).some(k=>!["operation","action","package","snapshot","reviewBinding","subject","inputs","candidates","evidence"].includes(k))||typeof p.operation!=="string"||typeof p.action!=="string"||!object(p.package)||typeof p.snapshot!=="string"||!Array.isArray(p.candidates)||!p.candidates.length) fail("Expected operation, action, exact package/snapshot and candidate batch");
+  if(p.reviewBinding!==undefined&&(typeof p.reviewBinding!=="string"||!/^sha256:[a-f0-9]{64}$/.test(p.reviewBinding))) fail("reviewBinding must be sha256:<64 lowercase hex>");
   checkOperation(p.operation);
   p.candidates.forEach((c:unknown,index:number)=>{
     const location=`candidates[${index}]`;
@@ -251,8 +254,9 @@ export async function submitDirectProposal(root:string,source:string,authorities
   if(!isDeepStrictEqual(proposal.evidence?.authority??[],authorities))fail("Stakeholder authority must match the explicitly supplied command authority");
   return withRepositoryLock(root,lock,async()=>{
     const saved=await settlement(root,proposal.operation);if(saved){if(saved.tx.proposalDigest!==proposalDigest)fail("Operation already published different candidate bytes");return saved.result;}
-    const current=await directState(root);if(!isDeepStrictEqual(proposal.package,current.package))fail("Proposal package changed; refresh guidance");if(proposal.snapshot!==current.snapshot)fail(`Proposal snapshot does not match lifecycle repository ${current.repository} and its current data; it was drafted in another repository, an earlier state or by an earlier MDLM release. Redraft it from fresh guidance in this repository`);
+    const current=await directState(root);if(!isDeepStrictEqual(proposal.package,current.package))fail("Proposal package changed; refresh guidance");if(proposal.reviewBinding===undefined&&proposal.snapshot!==current.snapshot)fail(`Proposal snapshot does not match lifecycle repository ${current.repository} and its current data; it was drafted in another repository, an earlier state or by an earlier MDLM release. Redraft it from fresh guidance in this repository`);
     const context=directContext(current,proposal.action,proposal.subject);
+    if(proposal.reviewBinding!==undefined&&!bindsReviewContext(context))fail("Only an independently reviewed review action can bind a review context");
     if(proposal.inputs&&!isDeepStrictEqual(proposal.inputs,context.inputs))fail("Proposal exact inputs changed");
     const prompt=await resolvePrompt(current.pkg,context.action.prompt_ref);if(!prompt.prompt||prompt.diagnostics.length)fail("Package prompt unavailable");
     // Cheap authored-schema refusal precedes historical, authority and receipt checks; publication still validates the final data.
@@ -323,7 +327,7 @@ export async function inspectDirectOrphans(root:string,awsProfile:string){const 
 export async function inspectDirectDeployment(root:string,operation:string){checkOperation(operation);return{ok:true,contract:"mdlm-deployment-result@1",operation,value:await inspectDeployment(root,operation)};}
 export async function inspectDirectExecution(root:string,operation:string){checkOperation(operation);const current=await directState(root);const oid=await git(root,["rev-parse","--verify","--quiet",`refs/mdlm/execution/${operation}/latest`]).catch(e=>{if(e.code===1)return undefined;throw e;});if(!oid)return{ok:true,contract:"mdlm-execution-result@1",operation,value:{state:"not-started"}};const saved=await readVerificationReceiptBlob(root,oid);if(saved.receipt.binding.operation!==operation||!isDeepStrictEqual(saved.receipt.binding.package,current.package))fail("Execution settlement binding changed");return{ok:true,contract:"mdlm-execution-result@1",operation,value:{...saved,...(saved.receipt.state==="completed"?{evidence:`git-blob:${oid}`}:{})}};}
 export async function inspectDirectReview(root:string,action:string,subject?:string){const current=await directState(root);return {ok:true,...await buildDirectReviewContext(directContext(current,action,subject))};}
-export async function registerDirectReviewFiles(root:string,source:string,verdict:string){return withRepositoryLock(root,lock,async()=>{const p=parseDirectProposal(source);const current=await directState(root);if(!isDeepStrictEqual(p.package,current.package)||p.snapshot!==current.snapshot)fail("Review registration package or snapshot changed");const context=directContext(current,p.action,p.subject);const value=await registerDirectReview(root,context,source,verdict);if((await directState(root)).snapshot!==current.snapshot)fail("Review context changed during registration");return{ok:true,value};});}
+export async function registerDirectReviewFiles(root:string,source:string,verdict:string){return withRepositoryLock(root,lock,async()=>{const p=parseDirectProposal(source);const current=await directState(root);if(!isDeepStrictEqual(p.package,current.package)||(p.reviewBinding===undefined&&p.snapshot!==current.snapshot))fail("Review registration package or snapshot changed");const context=directContext(current,p.action,p.subject);const value=await registerDirectReview(root,context,source,verdict);if((await directState(root)).snapshot!==current.snapshot)fail("Review context changed during registration");return{ok:true,value};});}
 
 async function receiptDetails(current:State,implementation:DatumEnvelope){return Promise.all((await availableReceipts(current,implementation)).map(async evidence=>({evidence,...await readVerificationReceiptBlob(current.root,evidence.slice(9))})));}
 

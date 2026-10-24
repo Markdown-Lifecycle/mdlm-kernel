@@ -29,6 +29,8 @@ export interface DeploymentConfig {
   region: string;
   apm_project: string;
   stack_slots: string[];
+  /** The slots `deployment dry-run` may use; a subset of stack_slots. */
+  dry_run_slots?: string[];
   output_allowlist: string[];
   endpoint_output: string;
   probe_path: string;
@@ -37,7 +39,8 @@ export interface DeploymentConfig {
   resource_allowlist: string[];
 }
 export interface DeploymentBinding {
-  contract: "mdlm-deployment@1";
+  /** Dry-run bindings carry their own contract, so the credit receipt reader never accepts them. */
+  contract: "mdlm-deployment@1" | "mdlm-deployment-dry-run@1";
   operation: string;
   package: unknown;
   action: string;
@@ -104,7 +107,8 @@ export function parseDeploymentConfig(value: unknown): DeploymentConfig {
     if (!Array.isArray(list) || !list.length || new Set(list).size !== list.length || list.some(item => !pattern.test(String(item)))) fail(`${field} must list distinct names`);
     return list as string[];
   };
-  names("stack_slots", /^[A-Za-z][A-Za-z0-9-]{0,127}$/);
+  const slots = names("stack_slots", /^[A-Za-z][A-Za-z0-9-]{0,127}$/);
+  if (c.dry_run_slots !== undefined && names("dry_run_slots", /^[A-Za-z][A-Za-z0-9-]{0,127}$/).some(slot => !slots.includes(slot))) fail("dry_run_slots must be stack slots");
   const outputs = names("output_allowlist", /^[A-Za-z0-9]{1,255}$/);
   if (!outputs.includes(String(c.endpoint_output))) fail("endpoint_output must be an allowlisted output");
   if (!/^\/[\x21-\x7e]*$/.test(String(c.probe_path))) fail("probe_path must be an absolute URL path");
@@ -147,7 +151,7 @@ export function deploymentRunBinding(state: {pkg: ProcessPackage; package: unkno
 
 /** The tags every deployment carries (ADR-0009 section 4). `mdlm:deployment` is the deployment operation, which the DPL's receipt names. */
 export function deploymentTags(binding: DeploymentBinding, expiresAt: string): Record<string, string> {
-  return {"mdlm:repository": binding.repository, "mdlm:deployment": binding.operation, "mdlm:mode": "credit", "mdlm:expires-at": expiresAt};
+  return {"mdlm:repository": binding.repository, "mdlm:deployment": binding.operation, "mdlm:mode": binding.contract === "mdlm-deployment-dry-run@1" ? "dry-run" : "credit", "mdlm:expires-at": expiresAt};
 }
 
 /** Host commands see only the profile name, never inherited key material or another profile.

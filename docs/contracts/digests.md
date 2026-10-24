@@ -64,12 +64,17 @@ identity's UTF-8 bytes. It depends on nothing else.
 
 ## Review registration
 
-A registered review (`src/external-review.ts`, `mdlm-registered-review@2`)
+A registered review (`src/external-review.ts`, `mdlm-registered-review@3`)
 binds three bare-hex digests:
 
-- `contextSha256`: SHA-256 of the canonical review context. Take the output of
-  `mdlm review context <action> <subject> --json`, drop the top-level `ok`,
-  `command` and `diagnostics` keys, and serialize the rest canonically:
+- `contextSha256`: the [review binding](#review-binding). Registrations
+  written by earlier kernels (`mdlm-registered-review@2`) instead hold the
+  SHA-256 of the whole canonical review context, `snapshot` included, and are
+  still checked that way.
+
+  The canonical review context is the output of
+  `mdlm review context <action> <subject> --json`, with the top-level `ok`,
+  `command` and `diagnostics` keys dropped, serialized canonically:
   objects as `{` + entries sorted by key (UTF-16 code units), each
   `JSON.stringify(key):value`, joined by `,` + `}`; arrays as `[` + items
   joined by `,` + `]`; every other value with `JSON.stringify`. Keys whose
@@ -77,6 +82,19 @@ binds three bare-hex digests:
   the input therefore does not matter.
 - `verdictSha256`: SHA-256 of the exact verdict file bytes.
 - `proposalSha256`: SHA-256 of the exact proposal file bytes.
+
+## Review binding
+
+A review binds its own context rather than the whole snapshot
+([ADR 0011](../adr/0011-bind-reviews-to-their-context-not-the-snapshot.md)).
+The review binding is SHA-256 of the canonical serialization (as above) of
+`{contract: "mdlm-review-binding@1", repository, context}`, where
+`repository` is the snapshot's `git-commit:<sha>` repository identity and
+`context` is the canonical review context without its `snapshot` key. A
+review proposal from `mdlm proposal draft` carries it as
+`reviewBinding: "sha256:<hex>"`; the registry stores the bare hex as
+`contextSha256`. Two snapshots that give a review the same context give the
+same binding.
 
 `exportSha256` in a context export receipt hashes the saved file bytes, which
 are pretty-printed and may be an archive. It is a different value from

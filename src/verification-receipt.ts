@@ -6,6 +6,7 @@ import { executeDockerVerification, authenticateVerificationSource, authenticate
 import { recaptureVerificationReport, verificationReportOutcome } from "./independent-verification-execution.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
 import { refuseSecretResult } from "./secret-scan.js";
+import { probeMatches, type VerificationDeployment } from "./networked-verification.js";
 
 const exec = promisify(execFile);
 export interface VerificationBinding {
@@ -19,6 +20,7 @@ export interface VerificationBinding {
   scriptPath?: string;
   independentVerification?: IndependentVerification;
   formalFiles?: string[];
+  deployment?: VerificationDeployment;
 }
 /** Dry-run results are readiness checks, never receipts; credit paths reject this contract. */
 export const DRY_RUN_CONTRACT = "mdlm-execution-dry-run@1";
@@ -121,6 +123,10 @@ export async function requireCoherentVerificationResult(binding: VerificationBin
   if (result.sourceTree === null || result.scriptSha256 === null) refuse("source identity");
   if (result.image !== binding.image || !/^sha256:[a-f0-9]{64}$/.test(String(result.imageId))
     || (/^sha256:[a-f0-9]{64}$/.test(binding.image) && result.imageId !== binding.image)) refuse("imageId");
+  // A networked pass or fail needs the bound deployment to report its version both before and after the run.
+  const deployment = binding.deployment, network = result.network;
+  if (deployment ? !network || network.deployment !== deployment.revision || network.receipt !== deployment.receipt || network.endpoint !== deployment.endpoint
+    || network.version !== deployment.version || !network.runId || !probeMatches(network.probes?.before, deployment) || !probeMatches(network.probes?.after, deployment) : network !== undefined) refuse("deployment probes");
   const independent = binding.independentVerification;
   if (!independent) {
     if (result.outcome !== (result.exitCode === 0 ? "pass" : result.exitCode === 1 ? "fail" : "error")) refuse("exit code");

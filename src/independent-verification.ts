@@ -6,6 +6,7 @@ import { authenticatedAuthoringPackage } from "./lifecycle-repository.js";
 import { boundLinks, effectiveInterfaces, requirementTraceBinding, selectedRequirementGraph } from "./requirement-trace.js";
 import type { VerificationBinding } from "./verification-receipt.js";
 import { jsonDigest } from "./json-stream.js";
+import { verificationDeployment } from "./networked-verification.js";
 
 type State = {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; authoringSelections?: readonly ProcessSelection[]};
 export interface VerificationCase {id: string; targets: string[]; preconditions: string[]; actions: string[]; expected_results: string[]; coverage_rationale: string}
@@ -110,7 +111,8 @@ export function independentExecutionBinding(state: State, product: DatumEnvelope
   if (targets(activity, "verifies").some(id => !allowed.has(id))) throw new Error("Selected activity targets differ from the product's exact intent");
   const p = activity.payload;
   if (path.resolve(String(p.repository_path)) === path.resolve(String(product.payload.repository_path))) throw new Error("Independent verification requires a separate verifier repository");
-  return {operation, package: state.package, inputs: [{name: exploratory ? "trial" : "implementation", revisions: [product.revision_id]}, {name: exploratory ? "experiment" : "requirements", revisions: selection}, {name: "activity", revisions: [activity.revision_id]}], repositoryPath: String(product.payload.repository_path), sourceCommit: String(product.payload.source_commit), image: String(p.verification_image), ...(product.payload.acceptance_scope === "partial" ? {formalFiles: product.payload.formal_files as string[]} : {}), independentVerification: {activityRevision: activity.revision_id, repositoryPath: String(p.repository_path), sourceCommit: String(p.source_commit), scriptPath: String(p.verification_script), command: p.verification_command as string[], caseIds: (p.cases as VerificationCase[]).map(c => c.id), resultsPath: String(p.results_path)}};
+  const deployment = verificationDeployment(state.pkg, state.data, product, activity);
+  return {operation, package: state.package, inputs: [{name: exploratory ? "trial" : "implementation", revisions: [product.revision_id]}, {name: exploratory ? "experiment" : "requirements", revisions: selection}, {name: "activity", revisions: [activity.revision_id]}], repositoryPath: String(product.payload.repository_path), sourceCommit: String(product.payload.source_commit), image: String(p.verification_image), ...(product.payload.acceptance_scope === "partial" ? {formalFiles: product.payload.formal_files as string[]} : {}), independentVerification: {activityRevision: activity.revision_id, repositoryPath: String(p.repository_path), sourceCommit: String(p.source_commit), scriptPath: String(p.verification_script), command: p.verification_command as string[], caseIds: (p.cases as VerificationCase[]).map(c => c.id), resultsPath: String(p.results_path)}, ...(deployment ? {deployment} : {})};
 }
 export function currentVerificationResults(state: State, product: string, activity: string) {
   const b = binding(state);

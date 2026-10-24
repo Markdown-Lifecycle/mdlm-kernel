@@ -5,7 +5,7 @@ import path from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import type { DatumEnvelope, ProcessPackage } from "./index.js";
 import { deploymentBinding, describeStack, hostFailure, hostOptions, listStackResources, nonEmpty, parseDeploymentConfig, readDeploymentReceiptBlob, stackTags,
-  type DeploymentConfig, type InventoryEntry } from "./aws-cdk-deployment.js";
+  type DeploymentBinding, type DeploymentConfig, type DeploymentResult, type InventoryEntry } from "./aws-cdk-deployment.js";
 import { execute } from "./docker-verification.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
 import { refuseSecretValues, type SecretFinding } from "./secret-scan.js";
@@ -56,6 +56,11 @@ export async function deploymentRegistry(state: {root: string; pkg: ProcessPacka
     const {binding, result} = (await readDeploymentReceiptBlob(state.root, String(datum.payload.receipt).slice(9))).receipt;
     deployments.set(binding.operation, {revision: datum.revision_id, ...(result?.stack ? {stackId: result.stack.id} : {}), ...(result?.access ? {account: result.access.account} : {}), inventory: result?.inventory ?? []});
   }
+  // ADR-0009 section 5: completed dry-run deployment records count the same way as published records.
+  for (const record of await dryRunRecords(state.root)) {
+    if (record.state !== "completed") continue;
+    deployments.set(record.id, {revision: record.id, ...(record.result?.stack ? {stackId: record.result.stack.id} : {}), ...(record.result?.access ? {account: record.result.access.account} : {}), inventory: record.result?.inventory ?? []});
+  }
   const refs = await git(state.root, ["for-each-ref", "--format=%(objectname)", "refs/mdlm/teardown"]);
   for (const oid of new Set(refs.split("\n").filter(Boolean))) {
     const receipt = (await readTeardownReceiptBlob(state.root, oid)).receipt;
@@ -63,6 +68,16 @@ export async function deploymentRegistry(state: {root: string; pkg: ProcessPacka
     if (receipt.result?.outcome === "pass" && receipt.result.deployment && receipt.binding.target.kind !== "orphan-resource") tornDown.add(receipt.result.deployment);
   }
   return {repository: state.repository, deployments, tornDown};
+}
+
+type DryRunRecord = {contract: string; id: string; state: string; binding: DeploymentBinding; result?: DeploymentResult};
+async function dryRunRecords(root: string): Promise<DryRunRecord[]> {
+  const directory = path.join(root, ".lifecycle/work/deployments");
+  const names = await fs.readdir(directory).catch(() => [] as string[]);
+  const files = names.filter(name => /^dry-[0-9a-f-]{36}\.json$/.test(name));
+  const records = await Promise.all(files.map(name => fs.readFile(path.join(directory, name), "utf8").then(source => JSON.parse(source) as DryRunRecord)));
+  // A record counts only under its own file name.
+  return records.filter((record, index) => record?.contract === "mdlm-deployment-dry-run@1" && `${record.id}.json` === files[index]);
 }
 
 /** Why a tagged stack or resource is an orphan, or undefined when a live deployment in this repository owns it. */
@@ -155,6 +170,16 @@ export interface TeardownResult {
 export async function teardownBinding(state: {root: string; pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; repository: string}, operation: string,
   options: {awsProfile: string; deployment?: string; orphanStack?: string; orphanResource?: string}): Promise<TeardownBinding> {
   const config = packageDeploymentConfig(state.pkg), base = {contract: "mdlm-teardown@1" as const, operation, package: state.package, repository: state.repository};
+  if (options.deployment !== undefined && /^dry-/.test(options.deployment)) {
+    // A dry-run deployment, even an interrupted one, is torn down from its record (ADR-0009 section 5).
+    const record = (await dryRunRecords(state.root)).find(r => r.id === options.deployment);
+    if (!record) throw new Error(`No dry-run deployment '${options.deployment}'`);
+    requireApmProfile(record.binding.config, options.awsProfile);
+    const deployed = record.result;
+    return {...base, config: record.binding.config, awsProfile: options.awsProfile,
+      target: {kind: "deployment", revision: record.id, receipt: `dry-run:${record.id}`, deployment: record.binding.operation, stack: record.binding.stack,
+        ...(deployed?.stack ? {stackId: deployed.stack.id} : {}), ...(deployed?.access ? {account: deployed.access.account} : {}), inventory: deployed?.inventory ?? []}};
+  }
   if (options.deployment !== undefined) {
     const record = state.data.find(d => d.revision_id === options.deployment);
     if (!record || record.type !== deploymentBinding(state.pkg)?.type || !/^git-blob:[a-f0-9]{40}$/.test(String(record.payload.receipt))) throw new Error("Teardown requires one exact published deployment record");
