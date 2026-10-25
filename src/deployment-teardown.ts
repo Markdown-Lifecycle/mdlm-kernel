@@ -44,17 +44,17 @@ const exec = promisify(execFile);
 const git = async (root: string, args: string[]) => (await exec("git", ["-C", root, ...args], {env: repositoryGitEnvironment(), maxBuffer: 64 * 1024 * 1024})).stdout.trim();
 
 /** What this repository knows about its deployments: published DPLs by deployment operation, with their recorded stack and inventory, and deployments already torn down. */
-export interface DeploymentRegistry {repository: string; deployments: Map<string, {revision: string; stackId?: string; account?: string; inventory: InventoryEntry[]}>; tornDown: Set<string>}
+export interface DeploymentRegistry {repository: string; deployments: Map<string, {revision: string; region: string; apmProject: string; stackId?: string; account?: string; inventory: InventoryEntry[]}>; tornDown: Set<string>}
 export async function deploymentRegistry(state: {root: string; pkg: ProcessPackage; data: DatumEnvelope[]; repository: string}): Promise<DeploymentRegistry> {
   const type = deploymentBinding(state.pkg)?.type, deployments: DeploymentRegistry["deployments"] = new Map(), tornDown = new Set<string>();
   for (const datum of state.data.filter(d => d.type === type && /^git-blob:[a-f0-9]{40}$/.test(String(d.payload.receipt)))) {
     const {binding, result} = (await readDeploymentReceiptBlob(state.root, String(datum.payload.receipt).slice(9))).receipt;
-    deployments.set(binding.operation, {revision: datum.revision_id, ...(result?.stack ? {stackId: result.stack.id} : {}), ...(result?.access ? {account: result.access.account} : {}), inventory: result?.inventory ?? []});
+    deployments.set(binding.operation, {revision: datum.revision_id, region: binding.config.region, apmProject: binding.config.apm_project, ...(result?.stack ? {stackId: result.stack.id} : {}), ...(result?.access ? {account: result.access.account} : {}), inventory: result?.inventory ?? []});
   }
   // ADR-0009 section 5: completed dry-run deployment records count the same way as published records.
   for (const record of await dryRunRecords(state.root)) {
     if (record.state !== "completed") continue;
-    deployments.set(record.id, {revision: record.id, ...(record.result?.stack ? {stackId: record.result.stack.id} : {}), ...(record.result?.access ? {account: record.result.access.account} : {}), inventory: record.result?.inventory ?? []});
+    deployments.set(record.id, {revision: record.id, region: record.binding.config.region, apmProject: record.binding.config.apm_project, ...(record.result?.stack ? {stackId: record.result.stack.id} : {}), ...(record.result?.access ? {account: record.result.access.account} : {}), inventory: record.result?.inventory ?? []});
   }
   const refs = await git(state.root, ["for-each-ref", "--format=%(objectname)", "refs/mdlm/teardown"]);
   for (const oid of new Set(refs.split("\n").filter(Boolean))) {
@@ -115,7 +115,8 @@ export async function findOrphans(config: DeploymentConfig, registry: Deployment
   }
   // The inventory covers resources the tag query cannot see: once a live deployment's stack is gone, any surviving top-level resource is an orphan.
   for (const [deployment, known] of registry.deployments) {
-    if (registry.tornDown.has(deployment) || !known.stackId || !known.account) continue;
+    // Deployments to another target's region or APM project are checked with that target's config.
+    if (registry.tornDown.has(deployment) || !known.stackId || !known.account || known.region !== config.region || known.apmProject !== config.apm_project) continue;
     const stack = await describeStack(known.stackId, config.region, host, true);
     if (stack && stack.StackStatus !== "DELETE_COMPLETE") continue;
     for (const entry of known.inventory.filter(entry => TOP_LEVEL[entry.type])) {

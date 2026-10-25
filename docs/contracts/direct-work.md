@@ -301,7 +301,8 @@ completed dry-run deployment record in the repository, when that deployment alre
 `mdlm:expires-at` has passed. A slot stack tagged for another repository is left
 to that repository. A top-level resource in a live deployment's recorded
 inventory that still exists after its stack is gone is also an orphan, even
-when the tag query cannot see it. Only a stack teardown marks a deployment torn
+when the tag query cannot see it; that check covers only deployments recorded
+with the same region and APM project as the config in use. Only a stack teardown marks a deployment torn
 down; deleting one orphan resource does not. `mdlm deployment orphans` lists orphans; the same check runs
 before every deploy (recorded as `orphans` in the receipt) and in every teardown.
 It only reports.

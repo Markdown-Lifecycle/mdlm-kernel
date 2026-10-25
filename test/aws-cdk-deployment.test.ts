@@ -108,6 +108,12 @@ if (args[0] === "sts" && args[1] === "get-caller-identity") { console.log(JSON.s
 const file = path.join(__dirname, "state", "aws.json"), db = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {stacks: [], resources: []};
 const save = () => fs.writeFileSync(file, JSON.stringify(db)), option = name => args[args.indexOf(name) + 1], done = value => { if (value !== undefined) console.log(JSON.stringify(value)); process.exit(0); };
 const missing = (code = "ResourceNotFoundException") => { console.error("An error occurred (" + code + ") when calling the operation: not found"); process.exit(254); };
+// eu-west-1 holds nothing; asking it about a us-east-1 stack ARN is an error, as in AWS.
+if (option("--region") === "eu-west-1") {
+  if (args[0] === "cloudformation" && option("--stack-name").startsWith("arn:")) { console.error("An error occurred (ValidationError) when calling the DescribeStacks operation: stack ARN is in another region"); process.exit(254); }
+  if (args[0] === "cloudformation") { console.error("An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id x does not exist"); process.exit(254); }
+  if (args[0] === "resourcegroupstaggingapi") done({ResourceTagMappingList: []});
+}
 if (args[0] === "cloudformation") {
   const name = option("--stack-name"), stack = name.startsWith("arn:") ? db.stacks.find(s => s.StackId === name) : db.stacks.find(s => s.StackName === name && s.StackStatus !== "DELETE_COMPLETE");
   if (!stack) { console.error("An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id x does not exist"); process.exit(254); }
@@ -533,6 +539,10 @@ test("a target-configured package deploys, dry-runs, finds orphans and tears dow
 
     expect((await cli("deployment", "orphans", ...profile)).json.diagnostics[0].message).toContain("pass --target <exact-DTG>");
     expect((await cli("deployment", "orphans", ...profile, "--target", demo)).json.value.orphans).toEqual([]);
+    // Another target's region is checked without reaching into deployments recorded for this one.
+    const europe = await recordTarget("target-europe", {region: "eu-west-1"});
+    const elsewhere = (await cli("deployment", "orphans", ...profile, "--target", europe)).json;
+    expect(elsewhere.value?.orphans, JSON.stringify(elsewhere)).toEqual([]);
 
     // Teardown reads the config recorded with the deployment, so it takes no --target.
     expect((await cli("deployment", "teardown", dpl, "teardown-with-target", ...profile, "--target", demo)).json.diagnostics[0].message).toContain("omit --target");
