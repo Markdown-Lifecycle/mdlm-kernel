@@ -108,6 +108,12 @@ if (args[0] === "sts" && args[1] === "get-caller-identity") { console.log(JSON.s
 const file = path.join(__dirname, "state", "aws.json"), db = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {stacks: [], resources: []};
 const save = () => fs.writeFileSync(file, JSON.stringify(db)), option = name => args[args.indexOf(name) + 1], done = value => { if (value !== undefined) console.log(JSON.stringify(value)); process.exit(0); };
 const missing = (code = "ResourceNotFoundException") => { console.error("An error occurred (" + code + ") when calling the operation: not found"); process.exit(254); };
+// eu-west-1 holds nothing; asking it about a us-east-1 stack ARN is an error, as in AWS.
+if (option("--region") === "eu-west-1") {
+  if (args[0] === "cloudformation" && option("--stack-name").startsWith("arn:")) { console.error("An error occurred (ValidationError) when calling the DescribeStacks operation: stack ARN is in another region"); process.exit(254); }
+  if (args[0] === "cloudformation") { console.error("An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id x does not exist"); process.exit(254); }
+  if (args[0] === "resourcegroupstaggingapi") done({ResourceTagMappingList: []});
+}
 if (args[0] === "cloudformation") {
   const name = option("--stack-name"), stack = name.startsWith("arn:") ? db.stacks.find(s => s.StackId === name) : db.stacks.find(s => s.StackName === name && s.StackStatus !== "DELETE_COMPLETE");
   if (!stack) { console.error("An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id x does not exist"); process.exit(254); }
@@ -143,83 +149,107 @@ if (resources[args[0]]) {
 process.exit(2);
 `;
 
-async function fixturePackage(directory: string) {
+/** With `target`, the package binds a DTG target type and its deployment action fixes no config. */
+async function fixturePackage(directory: string, options: {target?: boolean} = {}) {
   await fs.cp(installedProcessPackageRoot("iterative"), directory, {recursive: true});
   const schemaFile = path.join(directory, "meta/action-definition.schema.json");
   const schema = JSON.parse(await fs.readFile(schemaFile, "utf8"));
   schema.properties.capability.enum.push("deployment");
   await fs.writeFile(schemaFile, JSON.stringify(schema, null, 2));
+  if (options.target) {
+    // The package owns the binding meta-schema, so a target-configured package declares target_type there.
+    const bindingFile = path.join(directory, "meta/capability-binding.schema.json"), binding = JSON.parse(await fs.readFile(bindingFile, "utf8"));
+    binding.properties.target_type = binding.properties.implementation_type;
+    await fs.writeFile(bindingFile, JSON.stringify(binding, null, 2));
+  }
   const lifecycle = {authorship: "authored", freeze_when: "terminal-outcome", terminal_payload_field: "publication", terminal_values: ["recorded"]};
   const text = {type: "string", minLength: 1};
+  const configSchema = {required: Object.keys(config), properties: Object.fromEntries(Object.keys(config).map(key => [key, {}]))};
+  const fixed = options.target ? {required: [], properties: {target: text}} : configSchema;
   await fs.writeFile(path.join(directory, "types/PRD.yaml"), stringify({kind: "type-definition", id: "PRD", version: 1, name: "Product", description: "Deployable product", extends: "titled-datum@1", lifecycle,
     payload_schema: {$schema: "https://json-schema.org/draft/2020-12/schema", type: "object", required: ["publication", "repository_path", "source_commit"], properties: {publication: {const: "recorded"}, repository_path: text, source_commit: {type: "string", pattern: "^[a-f0-9]{40}$"}}},
     outgoing_links: [], kernel_managed_payload_paths: []}));
   await fs.writeFile(path.join(directory, "types/DPL.yaml"), stringify({kind: "type-definition", id: "DPL", version: 1, name: "Deployment", description: "Deployment record", extends: "titled-datum@1", lifecycle,
-    payload_schema: {$schema: "https://json-schema.org/draft/2020-12/schema", type: "object", required: ["publication", ...Object.keys(config), "outcome", "receipt"], properties: {
-      publication: {const: "recorded"}, ...Object.fromEntries(Object.keys(config).map(key => [key, {}])),
+    payload_schema: {$schema: "https://json-schema.org/draft/2020-12/schema", type: "object", required: ["publication", ...fixed.required, "outcome", "receipt"], properties: {
+      publication: {const: "recorded"}, ...fixed.properties,
       outcome: {enum: ["pass", "error"]}, receipt: text, stack: {type: "object"}, outputs: {type: "object"}, endpoint: text, deployed_version: text, expires_at: text}},
     outgoing_links: [{id: "deploys", description: "Exact product deployed", targets: [{kind: "datum", types: ["PRD"], identity: "revision"}], cardinality: {minimum: 1, maximum: 1}, freeze_resolution: "already-exact", inverse_label: "incoming-deploys"}],
-    kernel_managed_payload_paths: ["outcome", "receipt", "stack", "outputs", "endpoint", "deployed_version", "expires_at"]}));
+    kernel_managed_payload_paths: ["outcome", "receipt", "stack", "outputs", "endpoint", "deployed_version", "expires_at", ...(options.target ? ["target"] : [])]}));
   const prompt = "prompts/frame-experiment.md@2";
   await fs.writeFile(path.join(directory, "actions/record-product.yaml"), stringify({kind: "action-definition", id: "record-product", version: 1, capability: "experiment", prompt_ref: prompt, types: ["PRD"], inputs: {}, when: "true", priority: 1, fixed_payload: {PRD: {publication: "recorded"}}}));
-  await fs.writeFile(path.join(directory, "actions/deploy-product.yaml"), stringify({kind: "action-definition", id: "deploy-product", version: 1, capability: "deployment", prompt_ref: prompt, types: ["DPL"], inputs: {}, when: "true", priority: 1, fixed_payload: {DPL: {publication: "recorded", ...config}}}));
+  await fs.writeFile(path.join(directory, "actions/deploy-product.yaml"), stringify({kind: "action-definition", id: "deploy-product", version: 1, capability: "deployment", prompt_ref: prompt, types: ["DPL"], inputs: {}, when: "true", priority: 1, fixed_payload: {DPL: {publication: "recorded", ...(options.target ? {} : config)}}}));
+  if (options.target) {
+    await fs.writeFile(path.join(directory, "types/DTG.yaml"), stringify({kind: "type-definition", id: "DTG", version: 1, name: "Deployment target", description: "Where a product deploys", extends: "titled-datum@1", lifecycle,
+      payload_schema: {$schema: "https://json-schema.org/draft/2020-12/schema", type: "object", required: ["publication", ...configSchema.required], properties: {publication: {const: "recorded"}, ...configSchema.properties}},
+      outgoing_links: [], kernel_managed_payload_paths: []}));
+    await fs.writeFile(path.join(directory, "actions/record-target.yaml"), stringify({kind: "action-definition", id: "record-target", version: 1, capability: "experiment", prompt_ref: prompt, types: ["DTG"], inputs: {}, when: "true", priority: 1, fixed_payload: {DTG: {publication: "recorded"}}}));
+  }
   const manifestFile = path.join(directory, "manifest.yaml"), manifest = parse(await fs.readFile(manifestFile, "utf8"));
   manifest.id = "mdlm-deployment-fixture";
-  manifest.kernel_capabilities["aws-cdk-deployment@1"] = {type: "DPL", implementation_type: "PRD", action: "deploy-product"};
+  manifest.kernel_capabilities["aws-cdk-deployment@1"] = {type: "DPL", implementation_type: "PRD", action: "deploy-product", ...(options.target ? {target_type: "DTG"} : {})};
   await fs.writeFile(manifestFile, stringify(manifest));
 }
 
-test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, deploys on the host and records a probed receipt", async () => {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-deployment-")));
+/** A lifecycle repository on the fixture package, a product repository, and fake docker, cdk and aws on PATH. */
+async function harness(root: string, options: {target?: boolean} = {}) {
   const fixture = path.join(root, "package"), repository = path.join(root, "lifecycle"), product = path.join(root, "product"), bin = path.join(root, "bin"), state = path.join(bin, "state");
   const server = createServer(async (request, response) => {
     if (request.url !== "/version") return void response.writeHead(404).end();
     response.writeHead(200, {"content-type": "application/json"}).end(JSON.stringify({version: await fs.readFile(path.join(state, "deployed-version"), "utf8")}));
   });
+  await fixturePackage(fixture, options);
+  const initialized = await initializeRepositoryFromProcessPackage(repository, fixture);
+  expect(initialized.ok, JSON.stringify(initialized)).toBe(true);
+  await fs.mkdir(state, {recursive: true});
+  for (const [name, source] of [["docker", fakeDocker], ["cdk", fakeCdk], ["aws", fakeAws]] as const) await fs.writeFile(path.join(bin, name), `#!/usr/bin/env node\n${source}`, {mode: 0o755});
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  await fs.writeFile(path.join(state, "config.json"), JSON.stringify({endpoint: `http://127.0.0.1:${(server.address() as {port: number}).port}/`}));
+  // Any inherited key material must never reach the host CDK CLI or the AWS CLI.
+  const env = {...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, AWS_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE", AWS_PROFILE: "someone-else"};
+  const cli = async (...args: string[]) => {
+    const result = await run(process.execPath, [path.join(process.cwd(), "dist/mdlm.js"), ...args, "--json"], {cwd: repository, env, maxBuffer: 16 * 1024 * 1024}).catch(error => error);
+    return {status: result.code ?? 0, json: JSON.parse(result.stdout)};
+  };
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], {encoding: "utf8"}).trim();
+  const submit = async (proposal: any) => {
+    const file = path.join(root, `${proposal.operation}.json`);
+    await fs.writeFile(file, JSON.stringify(proposal));
+    const result = await cli("proposal", "submit", file);
+    expect(result.status, JSON.stringify(result.json)).toBe(0);
+    git(repository, "add", "."); git(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", proposal.operation);
+    return result.json.revisions[0] as string;
+  };
+  const draft = async (action: string, operation: string) => {
+    const file = path.join(root, `${operation}.draft.json`);
+    expect((await cli("proposal", "draft", action, "--operation", operation, "--output", file)).status).toBe(0);
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  };
+  await fs.mkdir(path.join(product, "infra"), {recursive: true});
+  git(product, "init", "-q");
+  const products: Record<string, {commit: string; revision: string}> = {};
+  const recordProduct = async (scenario: string, extra: Record<string, unknown> = {}) => {
+    await fs.writeFile(path.join(product, "infra/fixture.json"), JSON.stringify({scenario, ...extra}));
+    git(product, "add", "."); git(product, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", scenario);
+    const commit = git(product, "rev-parse", "HEAD"), proposal = await draft("record-product", `product-${scenario}`);
+    Object.assign(proposal.candidates[0].payload, {title: `Product ${scenario}`, repository_path: product, source_commit: commit});
+    products[scenario] = {commit, revision: await submit(proposal)};
+  };
+  return {repository, product, state, server, cli, git, submit, draft, products, recordProduct};
+}
+
+test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, deploys on the host and records a probed receipt", async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-deployment-")));
+  const {repository, product, state, server, cli, git, submit, draft, products, recordProduct} = await harness(root);
   try {
-    await fixturePackage(fixture);
-    const initialized = await initializeRepositoryFromProcessPackage(repository, fixture);
-    expect(initialized.ok, JSON.stringify(initialized)).toBe(true);
-    await fs.mkdir(state, {recursive: true});
-    for (const [name, source] of [["docker", fakeDocker], ["cdk", fakeCdk], ["aws", fakeAws]] as const) await fs.writeFile(path.join(bin, name), `#!/usr/bin/env node\n${source}`, {mode: 0o755});
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    await fs.writeFile(path.join(state, "config.json"), JSON.stringify({endpoint: `http://127.0.0.1:${(server.address() as {port: number}).port}/`}));
-    // Any inherited key material must never reach the host CDK CLI or the AWS CLI.
-    const env = {...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, AWS_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE", AWS_PROFILE: "someone-else"};
-    const cli = async (...args: string[]) => {
-      const result = await run(process.execPath, [path.join(process.cwd(), "dist/mdlm.js"), ...args, "--json"], {cwd: repository, env, maxBuffer: 16 * 1024 * 1024}).catch(error => error);
-      return {status: result.code ?? 0, json: JSON.parse(result.stdout)};
-    };
-    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], {encoding: "utf8"}).trim();
-    const submit = async (proposal: any) => {
-      const file = path.join(root, `${proposal.operation}.json`);
-      await fs.writeFile(file, JSON.stringify(proposal));
-      const result = await cli("proposal", "submit", file);
-      expect(result.status, JSON.stringify(result.json)).toBe(0);
-      git(repository, "add", "."); git(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", proposal.operation);
-      return result.json.revisions[0] as string;
-    };
-    const draft = async (action: string, operation: string) => {
-      const file = path.join(root, `${operation}.draft.json`);
-      expect((await cli("proposal", "draft", action, "--operation", operation, "--output", file)).status).toBe(0);
-      return JSON.parse(await fs.readFile(file, "utf8"));
-    };
-    await fs.mkdir(path.join(product, "infra"), {recursive: true});
-    git(product, "init", "-q");
-    const products: Record<string, {commit: string; revision: string}> = {};
-    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["nested", {}], ["mismatch", {bake: "0".repeat(40)}], ["leak", {}], ["custom", {}]] as const) {
-      await fs.writeFile(path.join(product, "infra/fixture.json"), JSON.stringify({scenario, ...extra}));
-      git(product, "add", "."); git(product, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", scenario);
-      const commit = git(product, "rev-parse", "HEAD"), proposal = await draft("record-product", `product-${scenario}`);
-      Object.assign(proposal.candidates[0].payload, {title: `Product ${scenario}`, repository_path: product, source_commit: commit});
-      products[scenario] = {commit, revision: await submit(proposal)};
-    }
+    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["nested", {}], ["mismatch", {bake: "0".repeat(40)}], ["leak", {}], ["custom", {}]] as const) await recordProduct(scenario, extra);
     const deploy = (scenario: string, operation: string, stack = "mdlm-demo-credit", profile = "apm-mdlm-demo") => cli("deployment", "run", products[scenario]!.revision, operation, "--stack", stack, "--aws-profile", profile);
     const deploys = async () => (await fs.readFile(path.join(state, "deploys"), "utf8").catch(() => "")).length;
 
     // Only the package-named APM profile and a package stack slot are accepted.
     expect((await deploy("ok", "wrong-profile", "mdlm-demo-credit", "default")).json.diagnostics[0].message).toContain("--aws-profile apm-mdlm-demo");
     expect((await deploy("ok", "wrong-slot", "someone-elses-stack")).json.diagnostics[0].message).toContain("not one of the package's stack slots");
+    // A package without target_type keeps its fixed config and takes no --target.
+    expect((await cli("deployment", "run", products.ok!.revision, "with-target", "--stack", "mdlm-demo-credit", "--aws-profile", "apm-mdlm-demo", "--target", products.ok!.revision)).json.diagnostics[0].message).toContain("takes no --target");
 
     const passed = await deploy("ok", "deploy-ok");
     expect(passed.status, JSON.stringify(passed.json)).toBe(0);
@@ -461,6 +491,70 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
   }
 }, 120_000);
 
+test("a target-configured package deploys, dry-runs, finds orphans and tears down with the exact DTG's config", async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-deployment-target-")));
+  const {repository, cli, git, submit, draft, products, recordProduct, server} = await harness(root, {target: true});
+  try {
+    await recordProduct("ok");
+    const recordTarget = async (operation: string, overrides: Record<string, unknown> = {}) => {
+      const proposal = await draft("record-target", operation);
+      Object.assign(proposal.candidates[0].payload, {title: `Target ${operation}`, ...config, ...overrides});
+      return submit(proposal);
+    };
+    const demo = await recordTarget("target-demo");
+    // A second target whose resource allowlist omits DynamoDB, so the D5 policy refuses the fixture's table.
+    const strict = await recordTarget("target-strict", {resource_allowlist: ["AWS::Lambda::Function", "AWS::ApiGatewayV2::Api", "AWS::Logs::LogGroup"]});
+    const profile = ["--aws-profile", "apm-mdlm-demo"];
+    const deploy = (operation: string, ...target: string[]) => cli("deployment", "run", products.ok!.revision, operation, "--stack", "mdlm-demo-credit", ...profile, ...target);
+
+    expect((await deploy("no-target")).json.diagnostics[0].message).toContain("pass --target <exact-DTG>");
+    expect((await deploy("product-as-target", "--target", products.ok!.revision)).json.diagnostics[0].message).toContain("must be an exact DTG revision");
+    const refused = (await deploy("deploy-strict", "--target", strict)).json.value.receipt;
+    expect([refused.binding.target, refused.result.phase, refused.result.deployAttempted, refused.result.diagnostic]).toEqual([strict, "validation", false, expect.stringContaining("AWS::DynamoDB::Table")]);
+
+    // The binding records the target revision and only its config fields.
+    const passed = (await deploy("deploy-demo", "--target", demo)).json.value;
+    expect(passed.receipt.result.outcome, JSON.stringify(passed.receipt.result)).toBe("pass");
+    expect([passed.receipt.binding.target, passed.receipt.binding.config]).toEqual([demo, config]);
+    const record = await draft("deploy-product", "record-demo");
+    Object.assign(record.candidates[0].payload, {title: "Demo deployment"});
+    record.candidates[0].links = [{type: "deploys", target: products.ok!.revision}];
+    record.evidence = {receipt: passed.evidence};
+    const dpl = await submit(record);
+    expect((await cli("show", dpl)).json.lifecycleDatum.datum.payload).toMatchObject({outcome: "pass", receipt: passed.evidence, target: demo});
+
+    // A registered receipt whose config differs from the target it names is refused.
+    for (const [index, mutate] of ([r => { r.binding.config.max_lifetime_minutes = 60; }, r => { r.binding.target = strict; }] as ((r: any) => void)[]).entries()) {
+      const forged = structuredClone(passed.receipt); forged.binding.operation = forged.result.tags["mdlm:deployment"] = `forged-target-${index}`; mutate(forged);
+      const oid = execFileSync("git", ["-C", repository, "hash-object", "-w", "--stdin"], {input: JSON.stringify(forged), encoding: "utf8"}).trim();
+      git(repository, "update-ref", `refs/mdlm/deployment/forged-target-${index}/attempt-1-receipt`, oid);
+      const proposal = await draft("deploy-product", `record-forged-target-${index}`);
+      Object.assign(proposal, {candidates: record.candidates, evidence: {receipt: `git-blob:${oid}`}});
+      await fs.writeFile(path.join(root, `forged-target-${index}.json`), JSON.stringify(proposal));
+      expect((await cli("proposal", "submit", path.join(root, `forged-target-${index}.json`))).json.diagnostics[0].message).toContain("does not match this exact product, package and deployment configuration");
+    }
+
+    const dry = (await cli("deployment", "dry-run", products.ok!.revision, "--stack", "mdlm-demo-dry-1", ...profile, "--target", demo)).json;
+    expect(dry.value, JSON.stringify(dry)).toMatchObject({state: "completed", binding: {target: demo, config: {max_lifetime_minutes: 120}}, result: {outcome: "pass"}});
+
+    expect((await cli("deployment", "orphans", ...profile)).json.diagnostics[0].message).toContain("pass --target <exact-DTG>");
+    expect((await cli("deployment", "orphans", ...profile, "--target", demo)).json.value.orphans).toEqual([]);
+    // Another target's region is checked without reaching into deployments recorded for this one.
+    const europe = await recordTarget("target-europe", {region: "eu-west-1"});
+    const elsewhere = (await cli("deployment", "orphans", ...profile, "--target", europe)).json;
+    expect(elsewhere.value?.orphans, JSON.stringify(elsewhere)).toEqual([]);
+
+    // Teardown reads the config recorded with the deployment, so it takes no --target.
+    expect((await cli("deployment", "teardown", dpl, "teardown-with-target", ...profile, "--target", demo)).json.diagnostics[0].message).toContain("omit --target");
+    expect((await cli("deployment", "teardown", dpl, "teardown-demo", ...profile)).json.value.receipt.result).toMatchObject({outcome: "pass", stack: {status: "DELETE_COMPLETE"}, remaining: {tagged: [], inventory: []}});
+    expect((await cli("deployment", "teardown", dry.id, "teardown-dry", ...profile)).json.value.receipt.result).toMatchObject({outcome: "pass", stack: {status: "DELETE_COMPLETE"}});
+    expect((await cli("deployment", "teardown", "orphan-none", "--orphan-stack", "mdlm-demo-credit", ...profile, "--target", demo)).json.value.receipt.result.diagnostic).toContain("holds no orphan");
+  } finally {
+    server.close();
+    await fs.rm(root, {recursive: true, force: true});
+  }
+}, 120_000);
+
 test("aws-cdk-deployment@1 refuses a package whose deployment configuration is not pinned", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-deployment-package-"));
   try {
@@ -473,5 +567,21 @@ test("aws-cdk-deployment@1 refuses a package whose deployment configuration is n
       expect(loaded.ok).toBe(false);
       expect(JSON.stringify(loaded.diagnostics)).toContain(message);
     }
+  } finally { await fs.rm(root, {recursive: true, force: true}); }
+});
+
+test("aws-cdk-deployment@1 with target_type needs no fixed config and checks the target type carries it", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mdlm-deployment-package-"));
+  try {
+    await fixturePackage(root, {target: true});
+    const first = await loadProcessPackage(root);
+    expect(first.ok, JSON.stringify(first.diagnostics)).toBe(true);
+    const typeFile = path.join(root, "types/DTG.yaml"), type = parse(await fs.readFile(typeFile, "utf8"));
+    await fs.writeFile(typeFile, stringify({...type, payload_schema: {...type.payload_schema, required: type.payload_schema.required.filter((field: string) => field !== "region")}}));
+    const dplFile = path.join(root, "types/DPL.yaml"), dpl = parse(await fs.readFile(dplFile, "utf8"));
+    await fs.writeFile(dplFile, stringify({...dpl, kernel_managed_payload_paths: dpl.kernel_managed_payload_paths.filter((field: string) => field !== "target")}));
+    const diagnostics = JSON.stringify((await loadProcessPackage(root)).diagnostics);
+    expect(diagnostics).toContain("target type DTG must require payload region");
+    expect(diagnostics).toContain("requires managed target");
   } finally { await fs.rm(root, {recursive: true, force: true}); }
 });

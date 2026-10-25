@@ -86,6 +86,8 @@ export interface KernelCapabilityBinding {
   input_link?: string;
   subject_selector?: string;
   action?: string;
+  /** aws-cdk-deployment@1: the record type whose exact revision supplies the deployment config. */
+  target_type?: string;
 }
 
 export interface ProcessPackage {
@@ -268,7 +270,7 @@ function validateKernelCapabilities(
       continue;
     }
     if (reference === DEPLOYMENT_CAPABILITY) {
-      for (const message of deploymentCapabilityDiagnostics(processPackage, resolved.type.kernelManagedPayloadPaths)) diagnostics.push({code: "incompatible-kernel-capability", path: bindingPath, message});
+      for (const message of deploymentCapabilityDiagnostics(processPackage, resolved.type.kernelManagedPayloadPaths, id => { const target = resolveType(processPackage, id); return target.ok ? target.type : undefined; })) diagnostics.push({code: "incompatible-kernel-capability", path: bindingPath, message});
       continue;
     }
     if (reference === "verification-applicability@1") {

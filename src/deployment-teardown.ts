@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import type { DatumEnvelope, ProcessPackage } from "./index.js";
-import { deploymentBinding, describeStack, hostFailure, hostOptions, listStackResources, nonEmpty, parseDeploymentConfig, readDeploymentReceiptBlob, stackTags,
+import { deploymentBinding, describeStack, hostFailure, hostOptions, listStackResources, nonEmpty, readDeploymentReceiptBlob, resolveDeploymentConfig, stackTags,
   type DeploymentBinding, type DeploymentConfig, type DeploymentResult, type InventoryEntry } from "./aws-cdk-deployment.js";
 import { execute } from "./docker-verification.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
@@ -36,11 +36,6 @@ export function parseResourceArn(arn: string): {type: string; id: string; region
   return undefined;
 }
 
-export function packageDeploymentConfig(pkg: ProcessPackage): DeploymentConfig {
-  const binding = deploymentBinding(pkg);
-  if (!binding?.action) throw new Error("Selected package does not support aws-cdk-deployment@1");
-  return parseDeploymentConfig(pkg.actions[binding.action]?.fixed_payload?.[binding.type]);
-}
 export function requireApmProfile(config: DeploymentConfig, awsProfile: string) {
   if (awsProfile !== `apm-${config.apm_project}`) throw new Error(`Deployment requires --aws-profile apm-${config.apm_project} from aws-permissions-manager`);
 }
@@ -49,17 +44,17 @@ const exec = promisify(execFile);
 const git = async (root: string, args: string[]) => (await exec("git", ["-C", root, ...args], {env: repositoryGitEnvironment(), maxBuffer: 64 * 1024 * 1024})).stdout.trim();
 
 /** What this repository knows about its deployments: published DPLs by deployment operation, with their recorded stack and inventory, and deployments already torn down. */
-export interface DeploymentRegistry {repository: string; deployments: Map<string, {revision: string; stackId?: string; account?: string; inventory: InventoryEntry[]}>; tornDown: Set<string>}
+export interface DeploymentRegistry {repository: string; deployments: Map<string, {revision: string; region: string; apmProject: string; stackId?: string; account?: string; inventory: InventoryEntry[]}>; tornDown: Set<string>}
 export async function deploymentRegistry(state: {root: string; pkg: ProcessPackage; data: DatumEnvelope[]; repository: string}): Promise<DeploymentRegistry> {
   const type = deploymentBinding(state.pkg)?.type, deployments: DeploymentRegistry["deployments"] = new Map(), tornDown = new Set<string>();
   for (const datum of state.data.filter(d => d.type === type && /^git-blob:[a-f0-9]{40}$/.test(String(d.payload.receipt)))) {
     const {binding, result} = (await readDeploymentReceiptBlob(state.root, String(datum.payload.receipt).slice(9))).receipt;
-    deployments.set(binding.operation, {revision: datum.revision_id, ...(result?.stack ? {stackId: result.stack.id} : {}), ...(result?.access ? {account: result.access.account} : {}), inventory: result?.inventory ?? []});
+    deployments.set(binding.operation, {revision: datum.revision_id, region: binding.config.region, apmProject: binding.config.apm_project, ...(result?.stack ? {stackId: result.stack.id} : {}), ...(result?.access ? {account: result.access.account} : {}), inventory: result?.inventory ?? []});
   }
   // ADR-0009 section 5: completed dry-run deployment records count the same way as published records.
   for (const record of await dryRunRecords(state.root)) {
     if (record.state !== "completed") continue;
-    deployments.set(record.id, {revision: record.id, ...(record.result?.stack ? {stackId: record.result.stack.id} : {}), ...(record.result?.access ? {account: record.result.access.account} : {}), inventory: record.result?.inventory ?? []});
+    deployments.set(record.id, {revision: record.id, region: record.binding.config.region, apmProject: record.binding.config.apm_project, ...(record.result?.stack ? {stackId: record.result.stack.id} : {}), ...(record.result?.access ? {account: record.result.access.account} : {}), inventory: record.result?.inventory ?? []});
   }
   const refs = await git(state.root, ["for-each-ref", "--format=%(objectname)", "refs/mdlm/teardown"]);
   for (const oid of new Set(refs.split("\n").filter(Boolean))) {
@@ -120,7 +115,8 @@ export async function findOrphans(config: DeploymentConfig, registry: Deployment
   }
   // The inventory covers resources the tag query cannot see: once a live deployment's stack is gone, any surviving top-level resource is an orphan.
   for (const [deployment, known] of registry.deployments) {
-    if (registry.tornDown.has(deployment) || !known.stackId || !known.account) continue;
+    // Deployments to another target's region or APM project are checked with that target's config.
+    if (registry.tornDown.has(deployment) || !known.stackId || !known.account || known.region !== config.region || known.apmProject !== config.apm_project) continue;
     const stack = await describeStack(known.stackId, config.region, host, true);
     if (stack && stack.StackStatus !== "DELETE_COMPLETE") continue;
     for (const entry of known.inventory.filter(entry => TOP_LEVEL[entry.type])) {
@@ -168,8 +164,10 @@ export interface TeardownResult {
 
 /** Resolve what to tear down. A deployment target is one exact published deployment record. */
 export async function teardownBinding(state: {root: string; pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; repository: string}, operation: string,
-  options: {awsProfile: string; deployment?: string; orphanStack?: string; orphanResource?: string}): Promise<TeardownBinding> {
-  const config = packageDeploymentConfig(state.pkg), base = {contract: "mdlm-teardown@1" as const, operation, package: state.package, repository: state.repository};
+  options: {awsProfile: string; deployment?: string; orphanStack?: string; orphanResource?: string; target?: string}): Promise<TeardownBinding> {
+  const base = {contract: "mdlm-teardown@1" as const, operation, package: state.package, repository: state.repository};
+  // A deployment is torn down with the config its own record carries, whichever source supplied it.
+  if (options.deployment !== undefined && options.target !== undefined) throw new Error("A deployment is torn down with the configuration in its record; omit --target");
   if (options.deployment !== undefined && /^dry-/.test(options.deployment)) {
     // A dry-run deployment, even an interrupted one, is torn down from its record (ADR-0009 section 5).
     const record = (await dryRunRecords(state.root)).find(r => r.id === options.deployment);
@@ -190,6 +188,7 @@ export async function teardownBinding(state: {root: string; pkg: ProcessPackage;
       target: {kind: "deployment", revision: record.revision_id, receipt: String(record.payload.receipt), deployment: receipt.binding.operation, stack: receipt.binding.stack,
         ...(deployed?.stack ? {stackId: deployed.stack.id} : {}), ...(deployed?.access ? {account: deployed.access.account} : {}), inventory: deployed?.inventory ?? []}};
   }
+  const {config} = resolveDeploymentConfig(state, options.target);
   requireApmProfile(config, options.awsProfile);
   if (options.orphanStack !== undefined) {
     if (!config.stack_slots.includes(options.orphanStack)) throw new Error(`Stack '${options.orphanStack}' is not one of the package's stack slots: ${config.stack_slots.join(", ")}`);

@@ -181,11 +181,20 @@ credentials.
   grant names exactly those stacks. The pool caps concurrency and spend and
   bounds where orphans can be. `deployment run` refuses a slot that already
   holds a stack.
+- **Deployment targets (#1150):** a general package shouldn't hard-code one
+  product's AWS settings. A package may bind `target_type` (for example `DTG`) in
+  `aws-cdk-deployment@1`. The stakeholder then records the settings (region, APM
+  project, slots, synth image, output and resource allowlists, probe path and
+  lifetime) on a target record, and `deployment run`, `dry-run` and `orphans` take
+  `--target <exact-DTG>`. The deployment binding records the target revision, and
+  publication checks the receipt against that record. Teardown uses the config
+  in the deployment's own receipt. Packages without `target_type` keep the
+  config in the deployment action's fixed payload.
 - **Cost limits are enforced before deploying:** billing data lags by hours, so
   MDLM can't stop spend while a run is in progress. Instead,
   `aws-cdk-deployment@1` checks the synthesized template before calling AWS and
   refuses it unless:
-  - every resource type is on the package allowlist (V1: Lambda, API Gateway v2
+  - every resource type is on the configured allowlist (V1: Lambda, API Gateway v2
     HTTP API, DynamoDB on-demand, CloudWatch log groups);
   - the template has no custom resources (`Custom::*`,
     `AWS::CloudFormation::CustomResource`). CDK backs these with provider

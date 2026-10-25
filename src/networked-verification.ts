@@ -39,12 +39,14 @@ const object = (value: unknown): value is Record<string, any> => !!value && type
 export function verificationDeployment(pkg: ProcessPackage, data: DatumEnvelope[], product: DatumEnvelope, activity: DatumEnvelope): VerificationDeployment | undefined {
   const links = activity.links.filter(link => link.type === "verified-against");
   if (!links.length) return undefined;
-  const type = pkg.kernelCapabilities[DEPLOYMENT_CAPABILITY]?.type;
+  const {type, target_type: targetType} = pkg.kernelCapabilities[DEPLOYMENT_CAPABILITY] ?? {};
   if (!type) throw new Error(`A verified-against activity requires the package's ${DEPLOYMENT_CAPABILITY} capability`);
   if (links.length !== 1) throw new Error("A verification activity is verified against at most one exact deployment");
   const deployment = data.find(d => d.revision_id === links[0]!.target);
   if (!deployment || deployment.type !== type) throw new Error(`verified-against must name an exact ${type} revision`);
-  const p = deployment.payload;
+  // A target-configured deployment takes its probe path from the exact target record it names.
+  const target = targetType === undefined ? undefined : data.find(d => d.revision_id === deployment.payload.target && d.type === targetType);
+  const p = target ? {...deployment.payload, probe_path: target.payload.probe_path} : deployment.payload;
   if (p.outcome !== "pass" || typeof p.endpoint !== "string" || typeof p.receipt !== "string" || typeof p.probe_path !== "string") throw new Error(`Deployment ${deployment.revision_id} did not complete successfully`);
   const deployed = data.find(d => d.revision_id === deployment.links.find(link => link.type === "deploys")?.target);
   if (deployed?.id !== product.id || p.deployed_version !== product.payload.source_commit) throw new Error(`Deployment ${deployment.revision_id} does not deploy product commit ${String(product.payload.source_commit)}`);
