@@ -38,7 +38,7 @@
   "dependencies": {
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
-    "mdlm-process-package": "github:taylorrowser/mdlm-process-package#3e3a84a1f5693716eaa15a844db64d61de0a2140",
+    "mdlm-process-package": "github:taylorrowser/mdlm-process-package#a79b80c298611bd20e91a2ce603a78a1b9410856",
     "yaml": "^2.8.1"
   },
   "devDependencies": {
