@@ -16,6 +16,7 @@ const run = promisify(execFile);
 const config = {
   synth_image: `cdk-synth@sha256:${"c".repeat(64)}`, cdk_cli_version: "2.1000.0", cdk_app_path: "infra", region: "us-east-1", apm_project: "mdlm-demo",
   stack_slots: ["mdlm-demo-credit", "mdlm-demo-dry-1"], dry_run_slots: ["mdlm-demo-dry-1"], output_allowlist: ["ApiEndpoint"], endpoint_output: "ApiEndpoint", probe_path: "/version", max_lifetime_minutes: 240,
+  resource_allowlist: ["AWS::Lambda::Function", "AWS::ApiGatewayV2::Api", "AWS::DynamoDB::Table", "AWS::Logs::LogGroup"],
 };
 
 // Stand-ins on PATH. They keep state beside themselves because the kernel gives host
@@ -59,7 +60,13 @@ if (args[0] === "synth") {
   const leaked = scenario === "leak" ? " AKIA" + "LEAKEDKEY0000000" : "";
   if (leaked) console.error("debug" + leaked);
   write("asset.abc/index.js", "export const version = " + JSON.stringify((bake ?? process.env.MDLM_PRODUCT_COMMIT) + leaked) + ";\n");
-  write(stack + ".template.json", {Resources: {}, Outputs: {ApiEndpoint: {Value: "x"}, Secret: {Value: "y"}}});
+  const Delete = {DeletionPolicy: "Delete", UpdateReplacePolicy: "Delete"};
+  write(stack + ".template.json", {Resources: {
+    Fn: {Type: "AWS::Lambda::Function", Properties: {ReservedConcurrentExecutions: 10, LoggingConfig: {LogGroup: {Ref: "Logs"}}}}, Perm: {Type: "AWS::Lambda::Permission", Properties: {FunctionName: {"Fn::GetAtt": ["Fn", "Arn"]}}},
+    Api: {Type: "AWS::ApiGatewayV2::Api", Properties: {ProtocolType: "HTTP"}}, Route: {Type: "AWS::ApiGatewayV2::Route", Properties: {ApiId: {Ref: "Api"}}},
+    Stage: {Type: "AWS::ApiGatewayV2::Stage", Properties: {ApiId: {Ref: "Api"}, DefaultRouteSettings: {ThrottlingBurstLimit: 20, ThrottlingRateLimit: 10}}},
+    Logs: {Type: "AWS::Logs::LogGroup", Properties: {RetentionInDays: 1}, ...Delete}, Table: {Type: "AWS::DynamoDB::Table", Properties: {BillingMode: "PAY_PER_REQUEST"}, ...Delete},
+    ...(scenario === "custom" ? {Cleanup: {Type: "Custom::S3AutoDeleteObjects"}} : {})}, Outputs: {ApiEndpoint: {Value: "x"}, Secret: {Value: "y"}}});
   const source = scenario === "executable" ? {executable: ["sh", "-c", "touch /tmp/pwned"]} : {path: scenario === "escape" ? "../outside" : "asset.abc", packaging: "zip"};
   write((scenario === "nested" ? "nested/" : "") + stack + ".assets.json", {version: "36.0.0", files: {abc: {source, destinations: {}}}, dockerImages: scenario === "docker" ? {img: {source: {directory: "asset.abc"}, destinations: {}}} : {}});
   write("manifest.json", {version: "36.0.0", artifacts: {
@@ -77,8 +84,19 @@ if (args[0] === "deploy") {
   const baked = /"(.*)"/.exec(fs.readFileSync(path.join(app, "asset.abc", "index.js"), "utf8"))[1];
   fs.writeFileSync(path.join(state, "deployed-version"), baked);
   const endpoint = JSON.parse(fs.readFileSync(path.join(state, "config.json"), "utf8")).endpoint;
-  fs.mkdirSync(path.join(state, "stacks"), {recursive: true});
-  fs.writeFileSync(path.join(state, "stacks", stack + ".json"), JSON.stringify({StackId: "arn:aws:cloudformation:us-east-1:123456789012:stack/" + stack + "/fake", StackName: stack, StackStatus: "CREATE_COMPLETE", CreationTime: "2026-10-21T00:00:00Z", Outputs: [{OutputKey: "ApiEndpoint", OutputValue: endpoint}, {OutputKey: "Secret", OutputValue: "not-allowlisted"}]}));
+  // Stack tags propagate to taggable resources, as CloudFormation does; children carry none.
+  const db = fs.existsSync(path.join(state, "aws.json")) ? JSON.parse(fs.readFileSync(path.join(state, "aws.json"), "utf8")) : {stacks: [], resources: []};
+  const Tags = args.flatMap((arg, i) => arg === "--tags" ? [{Key: args[i + 1].slice(0, args[i + 1].indexOf("=")), Value: args[i + 1].slice(args[i + 1].indexOf("=") + 1)}] : []);
+  const StackId = "arn:aws:cloudformation:us-east-1:123456789012:stack/" + stack + "/fake-" + db.stacks.length;
+  db.stacks.push({StackId, StackName: stack, StackStatus: "CREATE_COMPLETE", CreationTime: "2026-10-21T00:00:00Z", Tags, Outputs: [{OutputKey: "ApiEndpoint", OutputValue: endpoint}, {OutputKey: "Secret", OutputValue: "not-allowlisted"}]});
+  const manifest = JSON.parse(fs.readFileSync(path.join(app, "manifest.json"), "utf8")), template = JSON.parse(fs.readFileSync(path.join(app, manifest.artifacts[stack].properties.templateFile), "utf8"));
+  const arns = {"AWS::Lambda::Function": id => "arn:aws:lambda:us-east-1:123456789012:function:" + id, "AWS::ApiGatewayV2::Api": id => "arn:aws:apigateway:us-east-1::/apis/" + id,
+    "AWS::DynamoDB::Table": id => "arn:aws:dynamodb:us-east-1:123456789012:table/" + id, "AWS::Logs::LogGroup": id => "arn:aws:logs:us-east-1:123456789012:log-group:" + id};
+  for (const [logicalId, {Type}] of Object.entries(template.Resources)) {
+    const physicalId = (Type === "AWS::Logs::LogGroup" ? "/aws/lambda/" : "") + stack + "-" + db.stacks.length + "-" + logicalId;
+    db.resources.push({stackId: StackId, logicalId, type: Type, physicalId, ...(arns[Type] ? {arn: arns[Type](physicalId), tags: Tags} : {})});
+  }
+  fs.writeFileSync(path.join(state, "aws.json"), JSON.stringify(db));
   console.log("deployed " + stack + " version " + baked); process.exit(0);
 }
 process.exit(2);
@@ -87,10 +105,40 @@ const fakeAws = String.raw`
 const fs = require("node:fs"), path = require("node:path"), args = process.argv.slice(2);
 if (process.env.AWS_PROFILE !== "apm-mdlm-demo" || process.env.AWS_ACCESS_KEY_ID) { console.error("unexpected credentials"); process.exit(255); }
 if (args[0] === "sts" && args[1] === "get-caller-identity") { console.log(JSON.stringify({Account: "123456789012", Arn: "arn:aws:sts::123456789012:assumed-role/apm-mdlm-demo/session", UserId: "AROAEXAMPLE:session"})); process.exit(0); }
-if (args[0] === "cloudformation" && args[1] === "describe-stacks") {
-  const file = path.join(__dirname, "state", "stacks", args[args.indexOf("--stack-name") + 1] + ".json");
-  if (!fs.existsSync(file)) { console.error("An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id x does not exist"); process.exit(254); }
-  console.log(JSON.stringify({Stacks: [JSON.parse(fs.readFileSync(file, "utf8"))]})); process.exit(0);
+const file = path.join(__dirname, "state", "aws.json"), db = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {stacks: [], resources: []};
+const save = () => fs.writeFileSync(file, JSON.stringify(db)), option = name => args[args.indexOf(name) + 1], done = value => { if (value !== undefined) console.log(JSON.stringify(value)); process.exit(0); };
+const missing = (code = "ResourceNotFoundException") => { console.error("An error occurred (" + code + ") when calling the operation: not found"); process.exit(254); };
+if (args[0] === "cloudformation") {
+  const name = option("--stack-name"), stack = name.startsWith("arn:") ? db.stacks.find(s => s.StackId === name) : db.stacks.find(s => s.StackName === name && s.StackStatus !== "DELETE_COMPLETE");
+  if (!stack) { console.error("An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id x does not exist"); process.exit(254); }
+  if (args[1] === "describe-stacks") done({Stacks: [stack]});
+  if (args[1] === "list-stack-resources") done({StackResourceSummaries: db.resources.filter(r => r.stackId === stack.StackId).map(r => ({LogicalResourceId: r.logicalId, PhysicalResourceId: r.physicalId, ResourceType: r.type, ResourceStatus: "CREATE_COMPLETE"}))});
+  if (args[1] === "delete-stack") {
+    // With fail-delete present the table survives and the stack ends DELETE_FAILED.
+    const failing = fs.existsSync(path.join(__dirname, "state", "fail-delete"));
+    db.resources = db.resources.filter(r => r.stackId !== stack.StackId || (failing && r.type === "AWS::DynamoDB::Table"));
+    stack.StackStatus = failing ? "DELETE_FAILED" : "DELETE_COMPLETE"; save(); done();
+  }
+  if (args[1] === "wait") { if (stack.StackStatus === "DELETE_COMPLETE") done(); console.error("Waiter StackDeleteComplete failed: Waiter encountered a terminal failure state"); process.exit(255); }
+}
+if (args[0] === "resourcegroupstaggingapi" && args[1] === "get-resources" && args.includes("--resource-arn-list")) {
+  const wanted = args.slice(args.indexOf("--resource-arn-list") + 1).filter(arg => arg.startsWith("arn:"));
+  done({ResourceTagMappingList: db.resources.filter(r => wanted.includes(r.arn) && r.tags).map(r => ({ResourceARN: r.arn, Tags: r.tags}))});
+}
+if (args[0] === "resourcegroupstaggingapi" && args[1] === "get-resources") {
+  const filters = args.filter(arg => arg.startsWith("Key=")).map(arg => /^Key=([^,]+),Values=(.*)$/.exec(arg));
+  const tagged = [...db.stacks.filter(s => s.StackStatus !== "DELETE_COMPLETE").map(s => ({arn: s.StackId, tags: s.Tags})), ...db.resources.filter(r => r.arn && r.tags)];
+  done({ResourceTagMappingList: tagged.filter(r => filters.every(([, key, value]) => r.tags.some(t => t.Key === key && t.Value === value))).map(r => ({ResourceARN: r.arn, Tags: r.tags}))});
+}
+const resources = {lambda: ["AWS::Lambda::Function", "--function-name", "ResourceNotFoundException"], apigatewayv2: ["AWS::ApiGatewayV2::Api", "--api-id", "NotFoundException"],
+  dynamodb: ["AWS::DynamoDB::Table", "--table-name", "ResourceNotFoundException"], logs: ["AWS::Logs::LogGroup", "--log-group-name", "ResourceNotFoundException"]};
+if (resources[args[0]]) {
+  const [type, flag, code] = resources[args[0]];
+  if (args[1] === "describe-log-groups") done({logGroups: db.resources.filter(r => r.type === type && r.physicalId.startsWith(option("--log-group-name-prefix"))).map(r => ({logGroupName: r.physicalId}))});
+  const found = db.resources.find(r => r.type === type && r.physicalId === option(flag));
+  if (!found) missing(code);
+  if (/^delete-/.test(args[1])) { db.resources.splice(db.resources.indexOf(found), 1); save(); fs.appendFileSync(path.join(__dirname, "state", "resource-deletes"), found.arn + "\n"); }
+  done({});
 }
 process.exit(2);
 `;
@@ -159,7 +207,7 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     await fs.mkdir(path.join(product, "infra"), {recursive: true});
     git(product, "init", "-q");
     const products: Record<string, {commit: string; revision: string}> = {};
-    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["nested", {}], ["mismatch", {bake: "0".repeat(40)}], ["leak", {}]] as const) {
+    for (const [scenario, extra] of [["ok", {}], ["executable", {}], ["docker", {}], ["escape", {}], ["symlink", {}], ["cache", {}], ["nested", {}], ["mismatch", {bake: "0".repeat(40)}], ["leak", {}], ["custom", {}]] as const) {
       await fs.writeFile(path.join(product, "infra/fixture.json"), JSON.stringify({scenario, ...extra}));
       git(product, "add", "."); git(product, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgSign=false", "commit", "--no-verify", "-qm", scenario);
       const commit = git(product, "rev-parse", "HEAD"), proposal = await draft("record-product", `product-${scenario}`);
@@ -179,10 +227,15 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     expect(result, JSON.stringify(result)).toMatchObject({outcome: "pass", phase: "probe", deployAttempted: true,
       source: {commit: products.ok!.commit, appPath: "infra", synthImage: config.synth_image, synthImageId: `sha256:${"1".repeat(64)}`, hostCdkVersion: "2.1000.0"},
       access: {apmProject: "mdlm-demo", account: "123456789012", callerArn: "arn:aws:sts::123456789012:assumed-role/apm-mdlm-demo/session"},
-      stack: {account: "123456789012", region: "us-east-1", name: "mdlm-demo-credit", id: "arn:aws:cloudformation:us-east-1:123456789012:stack/mdlm-demo-credit/fake", status: "CREATE_COMPLETE"},
+      stack: {account: "123456789012", region: "us-east-1", name: "mdlm-demo-credit", id: "arn:aws:cloudformation:us-east-1:123456789012:stack/mdlm-demo-credit/fake-0", status: "CREATE_COMPLETE"},
       deployedVersion: products.ok!.commit, probe: {matched: true, status: 200, expectedVersion: products.ok!.commit}});
     expect(result.outputs).toEqual({ApiEndpoint: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/$/)});
     expect(result.assembly.templateSha256).toMatch(/^[a-f0-9]{64}$/);
+    // The stack carries the required tags, and its resource inventory is recorded for teardown.
+    const repositoryId = `git-commit:${git(repository, "rev-list", "--max-parents=0", "HEAD")}`;
+    expect(result.tags).toEqual({"mdlm:repository": repositoryId, "mdlm:deployment": "deploy-ok", "mdlm:mode": "credit", "mdlm:expires-at": result.expiresAt});
+    expect(result.inventory.map((entry: any) => entry.type).sort()).toEqual(["AWS::ApiGatewayV2::Api", "AWS::ApiGatewayV2::Route", "AWS::ApiGatewayV2::Stage", "AWS::DynamoDB::Table", "AWS::Lambda::Function", "AWS::Lambda::Permission", "AWS::Logs::LogGroup"]);
+    expect(result.orphans).toEqual({checkedAt: expect.any(String), orphans: []});
     expect(result.assembly.assets).toEqual([{id: "abc", packaging: "zip", path: "asset.abc", sha256: expect.stringMatching(/^[a-f0-9]{64}$/)}]);
     // Synth ran with no network and no credentials; the host deploy saw only the APM profile.
     const created = (await fs.readFile(path.join(state, "docker-create.log"), "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
@@ -202,6 +255,8 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     // An occupied slot is refused before cdk deploy runs.
     const occupied = (await deploy("ok", "deploy-occupied")).json.value.receipt.result;
     expect([occupied.outcome, occupied.phase, occupied.deployAttempted, occupied.diagnostic]).toEqual(["error", "access", false, expect.stringContaining("already holds stack")]);
+    // The pre-deploy orphan check reports the unpublished deployment's stack before refusing the slot.
+    expect(occupied.orphans.orphans).toContainEqual(expect.objectContaining({kind: "stack", slot: "mdlm-demo-credit", deployment: "deploy-ok", reason: expect.stringContaining("names no deployment record")}));
 
     // The kernel fills the deployment record from the authenticated receipt.
     const record = await draft("deploy-product", "record-deployment");
@@ -225,9 +280,10 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
       ["probe", r => { r.result.probe.bodyBase64 = Buffer.from("{}").toString("base64"); }],
       ["stack", r => { r.result.stack.name = "mdlm-demo-dry-1"; }],
       ["stack", r => { r.result.stack.status = "ROLLBACK_COMPLETE"; }],
+      ["tags", r => { r.result.tags["mdlm:expires-at"] = "2099-01-01T00:00:00.000Z"; }],
     ];
     for (const [index, [field, mutate]] of forgeries.entries()) {
-      const forged = structuredClone(original); forged.binding.operation = `forged-${index}`; mutate(forged);
+      const forged = structuredClone(original); forged.binding.operation = forged.result.tags["mdlm:deployment"] = `forged-${index}`; mutate(forged);
       const oid = execFileSync("git", ["-C", repository, "hash-object", "-w", "--stdin"], {input: JSON.stringify(forged), encoding: "utf8"}).trim();
       git(repository, "update-ref", `refs/mdlm/deployment/forged-${index}/attempt-1-receipt`, oid);
       const proposal = await draft("deploy-product", `record-forged-${index}`);
@@ -237,8 +293,8 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     }
 
     // Assembly validation refuses before any AWS call, so nothing is deployed.
-    await fs.rm(path.join(state, "stacks"), {recursive: true});
-    for (const [scenario, message] of [["executable", "executable source"], ["docker", "Docker image assets"], ["escape", "inside the assembly"], ["symlink", "symlink"], ["cache", "publisher cache"], ["nested", "at the assembly root"]]) {
+    await fs.rm(path.join(state, "aws.json"));
+    for (const [scenario, message] of [["executable", "executable source"], ["docker", "Docker image assets"], ["escape", "inside the assembly"], ["symlink", "symlink"], ["cache", "publisher cache"], ["nested", "at the assembly root"], ["custom", "template policy: Cleanup (Custom::S3AutoDeleteObjects) is a custom resource"]]) {
       const refused = (await deploy(scenario!, `refuse-${scenario}`)).json.value.receipt.result;
       expect([refused.outcome, refused.phase, refused.deployAttempted], scenario).toEqual(["error", "validation", false]);
       expect(refused.diagnostic).toContain(message);
@@ -278,10 +334,40 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     Object.assign(leakRecord.candidates[0].payload, {title: "Leaking deployment"});
     leakRecord.candidates[0].links = [{type: "deploys", target: products.leak!.revision}];
     leakRecord.evidence = {receipt: leakRun.json.value.evidence};
-    expect((await cli("show", await submit(leakRecord))).json.lifecycleDatum.datum.payload).toMatchObject({outcome: "error", stack: {name: "mdlm-demo-dry-1"}});
+    const leakDpl = await submit(leakRecord);
+    expect((await cli("show", leakDpl)).json.lifecycleDatum.datum.payload).toMatchObject({outcome: "error", stack: {name: "mdlm-demo-dry-1"}});
+
+    // An interrupted attempt leaves its started marker and is never re-run.
+    const binding = (await cli("deployment", "settlement", "deploy-ok")).json.value.receipt.binding;
+    const interrupted = {...binding, operation: "interrupted"};
+    await expect(runDeploymentReceipt(repository, interrupted, async () => { throw new Error("process killed"); })).rejects.toThrow("process killed");
+    await expect(runDeploymentReceipt(repository, interrupted, async () => { throw new Error("must not run"); })).rejects.toThrow("never re-run");
+
+    // Orphans: the mismatch deployment was never published, so its stack and tagged resources are orphans;
+    // the published leak deployment in dry-1 is not.
+    const profile = ["--aws-profile", "apm-mdlm-demo"];
+    expect((await cli("deployment", "orphans", "--aws-profile", "default")).json.diagnostics[0].message).toContain("--aws-profile apm-mdlm-demo");
+    const report = (await cli("deployment", "orphans", ...profile)).json.value;
+    expect(report.orphans.filter((o: any) => o.kind === "stack")).toEqual([{kind: "stack", arn: expect.stringContaining("stack/mdlm-demo-credit/"), slot: "mdlm-demo-credit", status: "CREATE_COMPLETE", deployment: "deploy-mismatch", reason: expect.stringContaining("names no deployment record")}]);
+    expect(report.orphans.filter((o: any) => o.kind === "resource").map((o: any) => o.deployment)).toEqual(["deploy-mismatch", "deploy-mismatch", "deploy-mismatch", "deploy-mismatch"]);
+
+    // A deployment teardown deletes by stack ID and passes only when the stack, tag query and inventory checks all pass.
+    const teardown = (dpl: string, operation: string) => cli("deployment", "teardown", dpl, operation, ...profile);
+    const aws = async () => JSON.parse(await fs.readFile(path.join(state, "aws.json"), "utf8"));
+    const torn = await teardown(leakDpl, "teardown-leak");
+    expect(torn.status, JSON.stringify(torn.json)).toBe(0);
+    const tornResult = torn.json.value.receipt.result;
+    expect(tornResult, JSON.stringify(tornResult)).toMatchObject({outcome: "pass", phase: "verify", deleteAttempted: true, deployment: "deploy-leak",
+      stack: {id: leak.stack.id, status: "DELETE_COMPLETE"}, remaining: {tagged: [], inventory: []}});
+    expect(tornResult.inventory).toHaveLength(7);
+    expect(tornResult.orphans.orphans.some((o: any) => o.deployment === "deploy-mismatch")).toBe(true);
+    expect((await aws()).resources.filter((r: any) => r.stackId === leak.stack.id)).toEqual([]);
+    // The receipt is write-once; repeating the command deletes nothing more.
+    const stacksBefore = JSON.stringify((await aws()).stacks);
+    expect((await teardown(leakDpl, "teardown-leak")).json.value.oid).toBe(torn.json.value.oid);
+    expect(JSON.stringify((await aws()).stacks)).toBe(stacksBefore);
 
     // A dry run deploys only to a dry-run slot with a 2-hour lifetime, registers no refs and is never deployment evidence.
-    await fs.rm(path.join(state, "stacks"), {recursive: true});
     const dryRun = (stack: string) => cli("deployment", "dry-run", products.ok!.revision, "--stack", stack, "--aws-profile", "apm-mdlm-demo");
     expect((await dryRun("mdlm-demo-credit")).json.diagnostics[0].message).toContain("not one of the package's dry-run slots");
     const dry = (await dryRun("mdlm-demo-dry-1")).json;
@@ -299,11 +385,76 @@ test("deployment run synthesizes in the sandbox, refuses unsafe assemblies, depl
     expect(await requireDeploymentDryRun(repository, dry.id, {repositoryPath: product, sourceCommit: products.ok!.commit})).toEqual({id: dry.id, assembly: result.assembly});
     await expect(requireDeploymentDryRun(repository, dry.id, {repositoryPath: product, sourceCommit: products.leak!.commit})).rejects.toThrow("not product commit");
 
-    // An interrupted attempt leaves its started marker and is never re-run.
-    const binding = (await cli("deployment", "settlement", "deploy-ok")).json.value.receipt.binding;
-    const interrupted = {...binding, operation: "interrupted"};
-    await expect(runDeploymentReceipt(repository, interrupted, async () => { throw new Error("process killed"); })).rejects.toThrow("process killed");
-    await expect(runDeploymentReceipt(repository, interrupted, async () => { throw new Error("must not run"); })).rejects.toThrow("never re-run");
+    // A dry run is tagged as one, ran the orphan check, is no orphan while its record is live, and tears down from its record.
+    expect(dry.value.result.tags).toMatchObject({"mdlm:deployment": dry.id, "mdlm:mode": "dry-run"});
+    expect(dry.value.result.orphans.orphans.some((o: any) => o.deployment === "deploy-mismatch")).toBe(true);
+    expect((await cli("deployment", "orphans", ...profile)).json.value.orphans.some((o: any) => o.deployment === dry.id)).toBe(false);
+    expect((await teardown(dry.id, "teardown-dry")).json.value.receipt.result).toMatchObject({outcome: "pass", deployment: dry.id, stack: {status: "DELETE_COMPLETE"}, remaining: {tagged: [], inventory: []}});
+
+    // The template policy applies to dry runs too: nothing reaches AWS.
+    const dryPolicy = (await cli("deployment", "dry-run", products.custom!.revision, "--stack", "mdlm-demo-dry-1", ...profile)).json.value.result;
+    expect([dryPolicy.outcome, dryPolicy.phase, dryPolicy.deployAttempted, dryPolicy.access]).toEqual(["error", "validation", false, undefined]);
+    expect(dryPolicy.diagnostic).toContain("template policy: Cleanup (Custom::S3AutoDeleteObjects) is a custom resource");
+
+
+    // --orphan-stack deletes only a reported orphan in the slot pool.
+    expect((await cli("deployment", "teardown", "orphan-empty", "--orphan-stack", "mdlm-demo-dry-1", ...profile)).json.value.receipt.result.diagnostic).toContain("holds no orphan");
+    expect((await cli("deployment", "teardown", "orphan-elsewhere", "--orphan-stack", "someone-elses-stack", ...profile)).json.diagnostics[0].message).toContain("not one of the package's stack slots");
+    const orphanStack = (await cli("deployment", "teardown", "orphan-credit", "--orphan-stack", "mdlm-demo-credit", ...profile)).json.value.receipt.result;
+    expect(orphanStack, JSON.stringify(orphanStack)).toMatchObject({outcome: "pass", deployment: "deploy-mismatch", stack: {status: "DELETE_COMPLETE"}, remaining: {tagged: [], inventory: []}});
+    expect((await cli("deployment", "orphans", ...profile)).json.value.orphans).toEqual([]);
+
+    // Resources outside a stack: a log group from an unknown deployment, a queue the kernel cannot delete,
+    // and an expired resource of a live deployment. The next deploy reports them and still proceeds.
+    const tags = (deployment: string, expires: string) => [{Key: "mdlm:repository", Value: repositoryId}, {Key: "mdlm:deployment", Value: deployment}, {Key: "mdlm:mode", Value: "credit"}, {Key: "mdlm:expires-at", Value: expires}];
+    const ghostLog = "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/ghost", queue = "arn:aws:sqs:us-east-1:123456789012:ghost", expired = "arn:aws:dynamodb:us-east-1:123456789012:table/expired";
+    const planted = await aws();
+    planted.resources.push({stackId: "none", logicalId: "", type: "AWS::Logs::LogGroup", physicalId: "/aws/lambda/ghost", arn: ghostLog, tags: tags("ghost", "2099-01-01T00:00:00.000Z")},
+      {stackId: "none", logicalId: "", type: "AWS::SQS::Queue", physicalId: "ghost", arn: queue, tags: tags("ghost", "2099-01-01T00:00:00.000Z")},
+      {stackId: "none", logicalId: "", type: "AWS::DynamoDB::Table", physicalId: "expired", arn: expired, tags: tags("deploy-ok", "2020-01-01T00:00:00.000Z")});
+    await fs.writeFile(path.join(state, "aws.json"), JSON.stringify(planted));
+    const again = (await deploy("ok", "deploy-again")).json.value;
+    expect(again.receipt.result.outcome, JSON.stringify(again.receipt.result)).toBe("pass");
+    expect(again.receipt.result.orphans.orphans.map((o: any) => [o.arn, o.reason])).toEqual([[ghostLog, expect.stringContaining("names no deployment record")], [queue, expect.stringContaining("names no deployment record")], [expired, expect.stringContaining("has passed")]]);
+    const resourceTeardown = (operation: string, arn: string, ...extra: string[]) => cli("deployment", "teardown", operation, "--orphan-resource", arn, ...extra, ...profile);
+    expect((await resourceTeardown("orphan-queue", queue, "--yes")).json.diagnostics[0].message).toContain("Remove any other resource by hand");
+    expect((await resourceTeardown("orphan-unconfirmed", ghostLog)).json.diagnostics[0].message).toContain("asks for confirmation");
+    const removed = (await resourceTeardown("orphan-ghost-log", ghostLog, "--yes")).json.value.receipt.result;
+    expect(removed, JSON.stringify(removed)).toMatchObject({outcome: "pass", deleteAttempted: true, deployment: "ghost", remaining: {tagged: [], inventory: []}});
+    expect(await fs.readFile(path.join(state, "resource-deletes"), "utf8")).toBe(`${ghostLog}\n`);
+
+    // A stack that fails to delete leaves the teardown in error, naming what remains.
+    const againRecord = await draft("deploy-product", "record-again");
+    Object.assign(againRecord.candidates[0].payload, {title: "Second credit deployment"});
+    againRecord.candidates[0].links = [{type: "deploys", target: products.ok!.revision}];
+    againRecord.evidence = {receipt: again.evidence};
+    const againDpl = await submit(againRecord);
+    // A published, unexpired deployment's own resources are never orphan resources.
+    const liveFunction = (await aws()).resources.find((r: any) => r.stackId === again.receipt.result.stack.id && r.type === "AWS::Lambda::Function").arn;
+    expect((await resourceTeardown("orphan-live", liveFunction, "--yes")).json.value.receipt.result.diagnostic).toContain("is not a reported orphan");
+    await fs.writeFile(path.join(state, "fail-delete"), "");
+    const failed = (await teardown(againDpl, "teardown-again-1")).json.value.receipt.result;
+    expect([failed.outcome, failed.stack.status, failed.remaining.inventory.map((e: any) => e.type)]).toEqual(["error", "DELETE_FAILED", ["AWS::DynamoDB::Table"]]);
+    expect(failed.remaining.tagged).toEqual([again.receipt.result.stack.id, expect.stringContaining(":table/")]);
+    expect(failed.diagnostic).toContain(`stack ${again.receipt.result.stack.id} is DELETE_FAILED`);
+    // A failed teardown does not count, so the deployment is not yet an orphan; a new teardown operation retries.
+    expect((await cli("deployment", "orphans", ...profile)).json.value.orphans.map((o: any) => o.arn)).toEqual([queue, expired]);
+    await fs.rm(path.join(state, "fail-delete"));
+    expect((await teardown(againDpl, "teardown-again-2")).json.value.receipt.result).toMatchObject({outcome: "pass", stack: {status: "DELETE_COMPLETE"}});
+
+    // The recorded inventory finds an untagged resource that outlived deploy-ok's stack; deleting it is resource-only
+    // and does not mark deploy-ok torn down, so its expired resource keeps its own reason.
+    const outlived = await aws(), tablePhysical = result.inventory.find((e: any) => e.type === "AWS::DynamoDB::Table").physicalId;
+    outlived.resources.push({stackId: "none", logicalId: "Table", type: "AWS::DynamoDB::Table", physicalId: tablePhysical, arn: `arn:aws:dynamodb:us-east-1:123456789012:table/${tablePhysical}`});
+    // A function that reused deploy-ok's physical name for another repository's deployment is judged by its own tags.
+    const fnPhysical = result.inventory.find((e: any) => e.type === "AWS::Lambda::Function").physicalId;
+    outlived.resources.push({stackId: "elsewhere", logicalId: "Fn", type: "AWS::Lambda::Function", physicalId: fnPhysical, arn: `arn:aws:lambda:us-east-1:123456789012:function:${fnPhysical}`,
+      tags: [{Key: "mdlm:repository", Value: "git-commit:other"}, {Key: "mdlm:deployment", Value: "theirs"}]});
+    await fs.writeFile(path.join(state, "aws.json"), JSON.stringify(outlived));
+    const inventoried = (await cli("deployment", "orphans", ...profile)).json.value.orphans;
+    expect(inventoried).toContainEqual({kind: "resource", arn: `arn:aws:dynamodb:us-east-1:123456789012:table/${tablePhysical}`, deployment: "deploy-ok", reason: expect.stringContaining("outlived its stack")});
+    expect((await resourceTeardown("orphan-outlived", `arn:aws:dynamodb:us-east-1:123456789012:table/${tablePhysical}`, "--yes")).json.value.receipt.result.outcome).toBe("pass");
+    expect((await cli("deployment", "orphans", ...profile)).json.value.orphans.map((o: any) => [o.arn, o.reason])).toEqual([[queue, expect.stringContaining("names no deployment record")], [expired, expect.stringContaining("has passed")]]);
   } finally {
     server.close();
     await fs.rm(root, {recursive: true, force: true});
@@ -316,10 +467,11 @@ test("aws-cdk-deployment@1 refuses a package whose deployment configuration is n
     await fixturePackage(root);
     expect((await loadProcessPackage(root)).ok).toBe(true);
     const actionFile = path.join(root, "actions/deploy-product.yaml"), action = parse(await fs.readFile(actionFile, "utf8"));
-    action.fixed_payload.DPL.synth_image = "cdk-synth:latest";
-    await fs.writeFile(actionFile, stringify(action));
-    const loaded = await loadProcessPackage(root);
-    expect(loaded.ok).toBe(false);
-    expect(JSON.stringify(loaded.diagnostics)).toContain("synth_image must be pinned");
+    for (const [field, value, message] of [["synth_image", "cdk-synth:latest", "synth_image must be pinned"], ["resource_allowlist", ["AWS::EC2::Instance"], "resource_allowlist must list distinct types"]] as const) {
+      await fs.writeFile(actionFile, stringify({...action, fixed_payload: {DPL: {...action.fixed_payload.DPL, [field]: value}}}));
+      const loaded = await loadProcessPackage(root);
+      expect(loaded.ok).toBe(false);
+      expect(JSON.stringify(loaded.diagnostics)).toContain(message);
+    }
   } finally { await fs.rm(root, {recursive: true, force: true}); }
 });

@@ -4,6 +4,7 @@ import path from "node:path";
 import { deploymentRunBinding, executeDeployment, type DeploymentBinding, type DeploymentResult } from "./aws-cdk-deployment.js";
 import { directState } from "./direct-proposal.js";
 import { refuseSecretValues } from "./secret-scan.js";
+import { deploymentRegistry, findOrphans } from "./deployment-teardown.js";
 
 // ADR-0009 section 5. A dry-run deployment publishes no lifecycle data and registers no
 // refs; its record lives beside the receipts and is never deployment evidence.
@@ -18,7 +19,8 @@ const recordFile = (root: string, id: string) => path.join(root, ".lifecycle/wor
 export async function runDeploymentDryRun(root: string, subject: string, options: {stack: string; awsProfile: string; source?: string | undefined}, execute = executeDeployment) {
   if (options.source !== undefined && !/^[a-f0-9]{40}$/.test(options.source)) throw new Error("--source must name an exact 40-character product commit");
   const id = `dry-${randomUUID()}`;
-  const credit = deploymentRunBinding(await directState(root), subject, id, options);
+  const current = await directState(root);
+  const credit = deploymentRunBinding(current, subject, id, options);
   const slots = credit.config.dry_run_slots ?? [];
   if (!slots.includes(options.stack)) throw new Error(`Stack '${options.stack}' is not one of the package's dry-run slots${slots.length ? `: ${slots.join(", ")}` : " (the package declares none)"}`);
   const binding: DeploymentBinding = {...credit, contract: DEPLOYMENT_DRY_RUN_CONTRACT, sourceCommit: options.source ?? credit.sourceCommit,
@@ -27,7 +29,7 @@ export async function runDeploymentDryRun(root: string, subject: string, options
   await fs.mkdir(path.dirname(file), {recursive: true});
   // The started record is durable before anything runs, so an interrupted dry run still names its slot for teardown.
   await fs.writeFile(file, `${JSON.stringify({contract: DEPLOYMENT_DRY_RUN_CONTRACT, credit: false, id, binding, state: "started"} satisfies DeploymentDryRunRecord, null, 2)}\n`, {flag: "wx"});
-  const record: DeploymentDryRunRecord = {contract: DEPLOYMENT_DRY_RUN_CONTRACT, credit: false, id, binding, state: "completed", result: refuseSecretValues(await execute(binding), "the product or its CDK app")};
+  const record: DeploymentDryRunRecord = {contract: DEPLOYMENT_DRY_RUN_CONTRACT, credit: false, id, binding, state: "completed", result: refuseSecretValues(await execute(binding, {orphans: async host => findOrphans(binding.config, await deploymentRegistry(current), host)}), "the product or its CDK app")};
   const temporary = `${file}.${randomUUID()}.tmp`;
   await fs.writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`);
   await fs.rename(temporary, file);
