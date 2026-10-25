@@ -13,12 +13,12 @@ CLI:
 - `mdlm execution run <exact-implementation> <operation> --json`
 - `mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <commit>] [--deployment <dry-run-deployment>] --json`
 - `mdlm execution settlement <operation> --json`
-- `mdlm deployment run <exact-product> <operation> --stack <slot> --aws-profile apm-<project> --json`
-- `mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <commit>] --json`
+- `mdlm deployment run <exact-product> <operation> --stack <slot> --aws-profile apm-<project> [--target <exact-target>] --json`
+- `mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <commit>] [--target <exact-target>] --json`
 - `mdlm deployment settlement <operation> --json`
 - `mdlm deployment teardown <exact-deployment|dry-run-id> <operation> --aws-profile apm-<project> --json`
-- `mdlm deployment teardown <operation> --orphan-stack <slot> | --orphan-resource <arn> [--yes] --aws-profile apm-<project> --json`
-- `mdlm deployment orphans --aws-profile apm-<project> --json`
+- `mdlm deployment teardown <operation> --orphan-stack <slot> | --orphan-resource <arn> [--yes] --aws-profile apm-<project> [--target <exact-target>] --json`
+- `mdlm deployment orphans --aws-profile apm-<project> [--target <exact-target>] --json`
 - `mdlm review context <action> <exact-subject> --json`
 - `mdlm review register <proposal-file> <verdict-file> --json`
 
@@ -236,6 +236,21 @@ drawn from `AWS::Lambda::Function`, `AWS::ApiGatewayV2::Api`,
 The record type must manage `outcome`, `receipt`, `stack`, `outputs`, `endpoint`,
 `deployed_version` and `expires_at`.
 
+A package may instead let each product choose where it deploys by binding
+`target_type`, a record type such as `DTG` whose payload schema requires every
+config field above (`synth_image`, `cdk_cli_version`, `cdk_app_path`, `region`,
+`apm_project`, `stack_slots`, `output_allowlist`, `endpoint_output`,
+`probe_path`, `max_lifetime_minutes`, `resource_allowlist`) and declares
+`dry_run_slots`. The deployment action then fixes no config, and the record type
+must also manage `target`. `deployment run`, `deployment dry-run`, `deployment
+orphans` and orphan teardown require `--target <exact-target>` and read the
+config from that exact revision; the binding records it as `target`, and the
+published record's `target` names it. Publication refuses a receipt whose config
+differs from its target's. A deployment teardown always uses the config in its
+own receipt or dry-run record and takes no `--target`. A package without
+`target_type` refuses `--target`. Networked verification reads `probe_path` from
+the deployment record's target.
+
 `mdlm deployment run <exact-product> <operation> --stack <slot> --aws-profile apm-<project> --json`
 runs `cdk synth` for the exact product commit in a disposable `--network none`
 container with no credentials, with `MDLM_PRODUCT_COMMIT` and `MDLM_STACK_NAME`
@@ -244,7 +259,7 @@ for the slot and only file assets already materialized inside the assembly: no
 symlinks, `executable` sources, Docker image assets, legacy asset metadata, nested
 assemblies or paths outside it. It also refuses a template that breaks the
 template policy, naming every broken rule: a `Transform` or `Fn::Transform`
-(expanded after the check); a resource type off the package
+(expanded after the check); a resource type off the configured
 allowlist; a custom resource (`Custom::*`, `AWS::CloudFormation::CustomResource`);
 an API stage, route or integration, or a Lambda permission, that does not
 reference an allowlisted parent in the same stack (`AWS::CDK::Metadata` is
@@ -333,7 +348,7 @@ only when both recorded probes still match.
 
 `mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <commit>] --json`
 runs the same synth, validation, deploy and probe steps as `deployment run`, but
-only into a slot the deployment action's fixed payload lists in `dry_run_slots`
+only into a slot the deployment config lists in `dry_run_slots`
 (a subset of `stack_slots`), with a lifetime of at most 2 hours. `--source`
 deploys a committed candidate commit in the product's repository instead of the
 published one. Each call gets a new dry-run deployment ID (`dry-<uuid>`), used as

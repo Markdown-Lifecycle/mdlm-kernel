@@ -35,6 +35,10 @@ it("selects only a completed deployment of the product's exact commit", () => {
   expect(parseEndpoint("https://[2001:DB8::1]/")).toEqual({host: "[2001:db8::1]", port: 443});
   expect(parseEndpoint("http://ABC.example:8080")).toEqual({host: "abc.example", port: 8080});
   expect(() => verificationDeployment({kernelCapabilities: {}} as unknown as ProcessPackage, data, reselected, activity("DPL-1-r00001"))).toThrow("aws-cdk-deployment@1");
+  // A target-configured deployment reads its probe path from the exact DTG it names.
+  const targeted = {kernelCapabilities: {"aws-cdk-deployment@1": {type: "DPL", target_type: "DTG"}}} as unknown as ProcessPackage;
+  const targetData = [deployed, datum("DTG-1-r00001", "DTG", {probe_path: "/healthz"}), dpl("DPL-4-r00001", {probe_path: undefined, target: "DTG-1-r00001"})];
+  expect(verificationDeployment(targeted, targetData, reselected, activity("DPL-4-r00001"))?.probePath).toBe("/healthz");
 });
 
 // A local stand-in for a deployed product: a version endpoint, a page and a redeploy

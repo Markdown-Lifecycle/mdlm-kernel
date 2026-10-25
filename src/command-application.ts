@@ -51,12 +51,12 @@ Direct lifecycle work:
   mdlm execution dry-run <exact-product> [--activity <exact-activity>]... [--all] [--source <product-commit>] [--deployment <dry-run-deployment>] [--json]
   mdlm execution settlement <operation-id> [--json]
   mdlm execution export <operation-id> <new-directory> [--json]
-  mdlm deployment run <exact-product> <operation-id> --stack <slot> --aws-profile apm-<project> [--json]
-  mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <product-commit>] [--json]
+  mdlm deployment run <exact-product> <operation-id> --stack <slot> --aws-profile apm-<project> [--target <exact-target>] [--json]
+  mdlm deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project> [--source <product-commit>] [--target <exact-target>] [--json]
   mdlm deployment settlement <operation-id> [--json]
   mdlm deployment teardown <exact-deployment|dry-run-id> <operation-id> --aws-profile apm-<project> [--json]
-  mdlm deployment teardown <operation-id> (--orphan-stack <slot> | --orphan-resource <arn> [--yes]) --aws-profile apm-<project> [--json]
-  mdlm deployment orphans --aws-profile apm-<project> [--json]
+  mdlm deployment teardown <operation-id> (--orphan-stack <slot> | --orphan-resource <arn> [--yes]) --aws-profile apm-<project> [--target <exact-target>] [--json]
+  mdlm deployment orphans --aws-profile apm-<project> [--target <exact-target>] [--json]
   mdlm review context <action> [<exact-subject>] [--output <file> [--format shared-verifier-trees]] [--json]
   mdlm review expand-context <archive-file> --output <new-file> [--json]
   mdlm review register <proposal-file> <verdict-file> [--json]
@@ -820,7 +820,7 @@ async function dispatchCommand(
   }
   if (operands[0] === "deployment") {
     try {
-      const valued = ["--stack", "--aws-profile", "--source", "--orphan-stack", "--orphan-resource"];
+      const valued = ["--stack", "--aws-profile", "--source", "--orphan-stack", "--orphan-resource", "--target"];
       const deploymentOperands = operands.filter((argument, index) => argument !== "--yes" && !valued.includes(argument) && !valued.includes(operands[index - 1]!));
       const single = (option: string) => {
         const values = optionValues(arguments_, option);
@@ -831,20 +831,20 @@ async function dispatchCommand(
         const stack = optionValues(arguments_, "--stack"), awsProfile = optionValues(arguments_, "--aws-profile"), source = optionValues(arguments_, "--source");
         const occurrences = (option: string) => arguments_.filter(argument => argument === option).length;
         if (stack.length !== 1 || awsProfile.length !== 1 || source.length > 1 || occurrences("--stack") !== 1 || occurrences("--aws-profile") !== 1 || occurrences("--source") !== source.length || [...stack, ...awsProfile, ...source].some(value => !value || value.startsWith("--"))) throw new Error("deployment dry-run requires one --stack <dry-run-slot>, one --aws-profile apm-<project> and at most one --source <product-commit>");
-        return {...await runDeploymentDryRun(repositoryRoot, deploymentOperands[2]!, {stack: stack[0]!, awsProfile: awsProfile[0]!, source: source[0]}), command: "deployment.dry-run", diagnostics: []};
+        return {...await runDeploymentDryRun(repositoryRoot, deploymentOperands[2]!, {stack: stack[0]!, awsProfile: awsProfile[0]!, source: source[0], target: single("--target")}), command: "deployment.dry-run", diagnostics: []};
       }
       if (deploymentOperands[1] === "run" && deploymentOperands.length === 4 && !arguments_.includes("--source")) {
         const stack = optionValues(arguments_, "--stack"), awsProfile = optionValues(arguments_, "--aws-profile");
         if (stack.length !== 1 || awsProfile.length !== 1 || [...stack, ...awsProfile].some(value => !value || value.startsWith("--"))) throw new Error("deployment run requires one --stack <slot> and one --aws-profile apm-<project>");
-        return {...await runDirectDeployment(repositoryRoot, deploymentOperands[2]!, deploymentOperands[3]!, {stack: stack[0]!, awsProfile: awsProfile[0]!}), command: "deployment.run", diagnostics: []};
+        return {...await runDirectDeployment(repositoryRoot, deploymentOperands[2]!, deploymentOperands[3]!, {stack: stack[0]!, awsProfile: awsProfile[0]!, target: single("--target")}), command: "deployment.run", diagnostics: []};
       }
       if (deploymentOperands[1] === "settlement" && deploymentOperands.length === 3 && deploymentOperands.length === operands.length) return {...await inspectDirectDeployment(repositoryRoot, deploymentOperands[2]!), command: "deployment.settlement", diagnostics: []};
       if (deploymentOperands[1] === "teardown" || deploymentOperands[1] === "orphans") {
-        const awsProfile = single("--aws-profile"), orphanStack = single("--orphan-stack"), orphanResource = single("--orphan-resource"), yes = arguments_.includes("--yes");
+        const awsProfile = single("--aws-profile"), orphanStack = single("--orphan-stack"), orphanResource = single("--orphan-resource"), target = single("--target"), yes = arguments_.includes("--yes");
         if (!awsProfile || arguments_.includes("--stack") || arguments_.includes("--source")) throw new Error("deployment teardown and orphans require one --aws-profile apm-<project>");
         if (deploymentOperands[1] === "orphans") {
           if (deploymentOperands.length !== 2 || orphanStack !== undefined || orphanResource !== undefined || yes) throw new Error("Expected deployment orphans --aws-profile apm-<project>");
-          return {...await inspectDirectOrphans(repositoryRoot, awsProfile), command: "deployment.orphans", diagnostics: []};
+          return {...await inspectDirectOrphans(repositoryRoot, awsProfile, target), command: "deployment.orphans", diagnostics: []};
         }
         const orphan = orphanStack !== undefined || orphanResource !== undefined;
         if ((orphanStack !== undefined && orphanResource !== undefined) || deploymentOperands.length !== (orphan ? 3 : 4) || (yes && orphanResource === undefined)) {
@@ -857,7 +857,7 @@ async function dispatchCommand(
           const prompt = createInterface({input: process.stdin, output: process.stderr});
           try { return /^y(es)?$/i.test((await prompt.question(`${question} [y/N] `)).trim()); } finally { prompt.close(); }
         };
-        return {...await runDirectTeardown(repositoryRoot, deploymentOperands.at(-1)!, {awsProfile, ...(orphanStack !== undefined ? {orphanStack} : orphanResource !== undefined ? {orphanResource} : {deployment: deploymentOperands[2]!})}, confirm), command: "deployment.teardown", diagnostics: []};
+        return {...await runDirectTeardown(repositoryRoot, deploymentOperands.at(-1)!, {awsProfile, ...(target !== undefined ? {target} : {}), ...(orphanStack !== undefined ? {orphanStack} : orphanResource !== undefined ? {orphanResource} : {deployment: deploymentOperands[2]!})}, confirm), command: "deployment.teardown", diagnostics: []};
       }
       throw new Error("Expected deployment run <exact-product> <operation-id> --stack <slot> --aws-profile apm-<project>, deployment dry-run <exact-product> --stack <dry-run-slot> --aws-profile apm-<project>, deployment settlement <operation-id>, deployment teardown or deployment orphans");
     } catch (error) { return {...failure("direct-deployment-invalid", String(error)), command: "deployment"}; }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import type { DatumEnvelope, ProcessPackage } from "./index.js";
-import { deploymentBinding, describeStack, hostFailure, hostOptions, listStackResources, nonEmpty, parseDeploymentConfig, readDeploymentReceiptBlob, stackTags,
+import { deploymentBinding, describeStack, hostFailure, hostOptions, listStackResources, nonEmpty, readDeploymentReceiptBlob, resolveDeploymentConfig, stackTags,
   type DeploymentBinding, type DeploymentConfig, type DeploymentResult, type InventoryEntry } from "./aws-cdk-deployment.js";
 import { execute } from "./docker-verification.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
@@ -36,11 +36,6 @@ export function parseResourceArn(arn: string): {type: string; id: string; region
   return undefined;
 }
 
-export function packageDeploymentConfig(pkg: ProcessPackage): DeploymentConfig {
-  const binding = deploymentBinding(pkg);
-  if (!binding?.action) throw new Error("Selected package does not support aws-cdk-deployment@1");
-  return parseDeploymentConfig(pkg.actions[binding.action]?.fixed_payload?.[binding.type]);
-}
 export function requireApmProfile(config: DeploymentConfig, awsProfile: string) {
   if (awsProfile !== `apm-${config.apm_project}`) throw new Error(`Deployment requires --aws-profile apm-${config.apm_project} from aws-permissions-manager`);
 }
@@ -168,8 +163,10 @@ export interface TeardownResult {
 
 /** Resolve what to tear down. A deployment target is one exact published deployment record. */
 export async function teardownBinding(state: {root: string; pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; repository: string}, operation: string,
-  options: {awsProfile: string; deployment?: string; orphanStack?: string; orphanResource?: string}): Promise<TeardownBinding> {
-  const config = packageDeploymentConfig(state.pkg), base = {contract: "mdlm-teardown@1" as const, operation, package: state.package, repository: state.repository};
+  options: {awsProfile: string; deployment?: string; orphanStack?: string; orphanResource?: string; target?: string}): Promise<TeardownBinding> {
+  const base = {contract: "mdlm-teardown@1" as const, operation, package: state.package, repository: state.repository};
+  // A deployment is torn down with the config its own record carries, whichever source supplied it.
+  if (options.deployment !== undefined && options.target !== undefined) throw new Error("A deployment is torn down with the configuration in its record; omit --target");
   if (options.deployment !== undefined && /^dry-/.test(options.deployment)) {
     // A dry-run deployment, even an interrupted one, is torn down from its record (ADR-0009 section 5).
     const record = (await dryRunRecords(state.root)).find(r => r.id === options.deployment);
@@ -190,6 +187,7 @@ export async function teardownBinding(state: {root: string; pkg: ProcessPackage;
       target: {kind: "deployment", revision: record.revision_id, receipt: String(record.payload.receipt), deployment: receipt.binding.operation, stack: receipt.binding.stack,
         ...(deployed?.stack ? {stackId: deployed.stack.id} : {}), ...(deployed?.access ? {account: deployed.access.account} : {}), inventory: deployed?.inventory ?? []}};
   }
+  const {config} = resolveDeploymentConfig(state, options.target);
   requireApmProfile(config, options.awsProfile);
   if (options.orphanStack !== undefined) {
     if (!config.stack_slots.includes(options.orphanStack)) throw new Error(`Stack '${options.orphanStack}' is not one of the package's stack slots: ${config.stack_slots.join(", ")}`);

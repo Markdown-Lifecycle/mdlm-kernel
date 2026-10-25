@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
-import type { DatumEnvelope, ProcessPackage } from "./index.js";
+import type { DatumEnvelope, ProcessPackage, ResolvedType } from "./index.js";
 import type { DirectAction } from "./direct-contract.js";
 import { archiveSource, authenticateProductSource, checked, execute } from "./docker-verification.js";
 import { repositoryGitEnvironment } from "./git-environment.js";
@@ -21,7 +21,7 @@ const HOST_TIMEOUT_MS = 30 * 60_000;
 const PROBE_TIMEOUT_MS = 10_000;
 const PROBE_BODY_LIMIT = 4096;
 
-/** Package-owned deployment settings, fixed by the deployment action for its record type. */
+/** Deployment settings: fixed by the package's deployment action, or carried by the product's deployment target record. */
 export interface DeploymentConfig {
   synth_image: string;
   cdk_cli_version: string;
@@ -48,6 +48,8 @@ export interface DeploymentBinding {
   repositoryPath: string;
   sourceCommit: string;
   config: DeploymentConfig;
+  /** The exact deployment target revision that supplied `config`; absent when the package's fixed payload did. */
+  target?: string;
   stack: string;
   awsProfile: string;
   /** Lifecycle repository identity, recorded in the `mdlm:repository` tag. */
@@ -91,6 +93,7 @@ const deployedStatus = (status: unknown) => /_COMPLETE$/.test(String(status)) &&
 const sha256 = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
 export function deploymentBinding(pkg: ProcessPackage) { return pkg.kernelCapabilities[DEPLOYMENT_CAPABILITY]; }
+const CONFIG_FIELDS = ["synth_image", "cdk_cli_version", "cdk_app_path", "region", "apm_project", "stack_slots", "dry_run_slots", "output_allowlist", "endpoint_output", "probe_path", "max_lifetime_minutes", "resource_allowlist"] as const;
 
 /** The single source of truth for what a package must fix before the kernel deploys anything. */
 export function parseDeploymentConfig(value: unknown): DeploymentConfig {
@@ -118,27 +121,51 @@ export function parseDeploymentConfig(value: unknown): DeploymentConfig {
   return value as unknown as DeploymentConfig;
 }
 
-/** Capability checks at package load, so a misconfigured package never reaches AWS. */
-export function deploymentCapabilityDiagnostics(pkg: ProcessPackage, managedPaths: string[]): string[] {
+/** Capability checks at package load, so a misconfigured package never reaches AWS.
+ * With `target_type`, the config comes from a deployment target record, so its type must carry every config field. */
+export function deploymentCapabilityDiagnostics(pkg: ProcessPackage, managedPaths: string[], resolve: (type: string) => ResolvedType | undefined): string[] {
   const binding = deploymentBinding(pkg)!;
   const problems: string[] = [];
   if (!binding.implementation_type || !pkg.types[binding.implementation_type]) problems.push("AWS CDK deployment requires a declared implementation_type");
-  for (const field of DEPLOYMENT_MANAGED_FIELDS) if (!managedPaths.includes(field)) problems.push(`AWS CDK deployment requires managed ${field}`);
+  for (const field of [...DEPLOYMENT_MANAGED_FIELDS, ...(binding.target_type !== undefined ? ["target"] : [])]) if (!managedPaths.includes(field)) problems.push(`AWS CDK deployment requires managed ${field}`);
   const action = binding.action ? pkg.actions[binding.action] : undefined;
   if (!action || action.capability !== "deployment" || !action.types.includes(binding.type)) problems.push("AWS CDK deployment must name a deployment action that publishes its record type");
-  else try { parseDeploymentConfig(action.fixed_payload?.[binding.type]); } catch (error) { problems.push((error as Error).message); }
+  else if (binding.target_type === undefined) try { parseDeploymentConfig(action.fixed_payload?.[binding.type]); } catch (error) { problems.push((error as Error).message); }
+  if (binding.target_type !== undefined) {
+    const target = pkg.types[binding.target_type] ? resolve(binding.target_type) : undefined;
+    if (!target) problems.push("AWS CDK deployment target_type must name a declared type");
+    else for (const field of CONFIG_FIELDS) {
+      const carried = field === "dry_run_slots" ? field in target.payloadSchema.properties : target.payloadSchema.required.includes(field);
+      if (!carried) problems.push(`AWS CDK deployment target type ${binding.target_type} must ${field === "dry_run_slots" ? "declare" : "require"} payload ${field}`);
+    }
+  }
   return problems;
 }
 
-function deploymentAction(pkg: ProcessPackage): {action: DirectAction; type: string; implementationType: string; config: DeploymentConfig} {
-  const binding = deploymentBinding(pkg);
+/** The config for one deployment: the exact target record's when the package binds a target type, otherwise the action's fixed payload. */
+export function resolveDeploymentConfig(state: {pkg: ProcessPackage; data: DatumEnvelope[]}, target: string | undefined): {config: DeploymentConfig; target?: string} {
+  const binding = deploymentBinding(state.pkg);
   if (!binding?.action) throw new Error(`Selected package does not support ${DEPLOYMENT_CAPABILITY}`);
-  const action = pkg.actions[binding.action]!;
-  return {action, type: binding.type, implementationType: binding.implementation_type!, config: parseDeploymentConfig(action.fixed_payload?.[binding.type])};
+  if (binding.target_type === undefined) {
+    if (target !== undefined) throw new Error("This package fixes its deployment configuration; it takes no --target");
+    return {config: parseDeploymentConfig(state.pkg.actions[binding.action]?.fixed_payload?.[binding.type])};
+  }
+  if (target === undefined) throw new Error(`This package deploys to a ${binding.target_type} record; pass --target <exact-${binding.target_type}>`);
+  const record = state.data.find(d => d.revision_id === target);
+  if (!record || record.type !== binding.target_type) throw new Error(`Deployment target must be an exact ${binding.target_type} revision`);
+  const fields = Object.fromEntries(CONFIG_FIELDS.filter(field => record.payload[field] !== undefined).map(field => [field, record.payload[field]]));
+  try { return {config: parseDeploymentConfig(fields), target}; } catch (error) { throw new Error(`Deployment target ${target}: ${(error as Error).message}`); }
 }
 
-export function deploymentRunBinding(state: {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; repository: string}, productId: string, operation: string, options: {stack: string; awsProfile: string}): DeploymentBinding {
-  const {action, implementationType, config} = deploymentAction(state.pkg);
+function deploymentAction(pkg: ProcessPackage): {action: DirectAction; implementationType: string} {
+  const binding = deploymentBinding(pkg);
+  if (!binding?.action) throw new Error(`Selected package does not support ${DEPLOYMENT_CAPABILITY}`);
+  return {action: pkg.actions[binding.action]!, implementationType: binding.implementation_type!};
+}
+
+export function deploymentRunBinding(state: {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; repository: string}, productId: string, operation: string, options: {stack: string; awsProfile: string; target?: string | undefined}): DeploymentBinding {
+  const {action, implementationType} = deploymentAction(state.pkg);
+  const {config, target} = resolveDeploymentConfig(state, options.target);
   const product = state.data.find(d => d.revision_id === productId);
   if (!product || product.type !== implementationType) throw new Error(`Deployment subject must be an exact ${implementationType} revision`);
   if (!nonEmpty(product.payload.repository_path) || !/^[a-f0-9]{40}$/.test(String(product.payload.source_commit))) throw new Error("Deployment subject must name a product repository and exact source commit");
@@ -146,7 +173,7 @@ export function deploymentRunBinding(state: {pkg: ProcessPackage; package: unkno
   // ADR-0009 section 3: the kernel uses only the package-named APM profile.
   if (options.awsProfile !== `apm-${config.apm_project}`) throw new Error(`Deployment requires --aws-profile apm-${config.apm_project} from aws-permissions-manager`);
   return {contract: "mdlm-deployment@1", operation, package: state.package, action: `${action.id}@${action.version}`, product: product.revision_id,
-    repositoryPath: String(product.payload.repository_path), sourceCommit: String(product.payload.source_commit), config, stack: options.stack, awsProfile: options.awsProfile, repository: state.repository};
+    repositoryPath: String(product.payload.repository_path), sourceCommit: String(product.payload.source_commit), config, ...(target !== undefined ? {target} : {}), stack: options.stack, awsProfile: options.awsProfile, repository: state.repository};
 }
 
 /** The tags every deployment carries (ADR-0009 section 4). `mdlm:deployment` is the deployment operation, which the DPL's receipt names. */
@@ -457,7 +484,7 @@ export async function requireCoherentDeployment(binding: DeploymentBinding, resu
   if (result.deployedVersion !== binding.sourceCommit) refuse("deployedVersion");
 }
 
-/** Authenticate a cited receipt against the current exact product and package-fixed configuration. */
+/** Authenticate a cited receipt against the current exact product and the configuration of its package or exact target record. */
 export async function validateDeploymentReceipt(root: string, state: {pkg: ProcessPackage; package: unknown; data: DatumEnvelope[]; repository: string}, locator: string, product: string) {
   if (!/^git-blob:[a-f0-9]{40}$/.test(locator)) throw new Error("Deployment evidence requires an exact receipt blob");
   const saved = await readDeploymentReceiptBlob(root, locator.slice(9));
@@ -465,11 +492,11 @@ export async function validateDeploymentReceipt(root: string, state: {pkg: Proce
   if (!/^[a-zA-Z0-9-]{1,80}$/.test(String(binding.operation))) throw new Error("Deployment receipt names an invalid operation");
   const registered = await git(root, ["rev-parse", "--verify", `${deploymentRef(binding.operation)}/attempt-1-receipt`]).catch(() => "");
   if (registered !== saved.oid || saved.receipt.state !== "completed" || !result) throw new Error("A completed deployment receipt registered to its operation is required");
-  const expected = deploymentRunBinding(state, product, binding.operation, {stack: binding.stack, awsProfile: binding.awsProfile});
+  const expected = deploymentRunBinding(state, product, binding.operation, {stack: binding.stack, awsProfile: binding.awsProfile, target: binding.target});
   if (!isDeepStrictEqual(expected, binding)) throw new Error("Deployment receipt does not match this exact product, package and deployment configuration");
   await requireCoherentDeployment(binding, result);
   return {saved, managed: {
-    outcome: result.outcome, receipt: locator,
+    outcome: result.outcome, receipt: locator, ...(binding.target !== undefined ? {target: binding.target} : {}),
     ...(result.stack ? {stack: {account: result.stack.account, region: result.stack.region, name: result.stack.name, id: result.stack.id, last_updated_time: result.stack.lastUpdatedTime}} : {}),
     ...(result.outputs ? {outputs: result.outputs} : {}),
     ...(result.endpoint ? {endpoint: result.endpoint} : {}),

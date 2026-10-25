@@ -16,7 +16,7 @@ export interface DeploymentDryRunRecord {contract: typeof DEPLOYMENT_DRY_RUN_CON
 const recordFile = (root: string, id: string) => path.join(root, ".lifecycle/work/deployments", `${id}.json`);
 
 /** Deploy one exact product commit to a dry-run slot. Each call is a new deployment with a fresh ID. */
-export async function runDeploymentDryRun(root: string, subject: string, options: {stack: string; awsProfile: string; source?: string | undefined}, execute = executeDeployment) {
+export async function runDeploymentDryRun(root: string, subject: string, options: {stack: string; awsProfile: string; source?: string | undefined; target?: string | undefined}, execute = executeDeployment) {
   if (options.source !== undefined && !/^[a-f0-9]{40}$/.test(options.source)) throw new Error("--source must name an exact 40-character product commit");
   const id = `dry-${randomUUID()}`;
   const current = await directState(root);
